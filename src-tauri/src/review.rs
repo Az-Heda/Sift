@@ -1,0 +1,127 @@
+//! Review-screen data: image metadata and the recommended copy to keep.
+
+use std::fs;
+use std::time::UNIX_EPOCH;
+
+use rusqlite::{params, Connection};
+
+use crate::scan::{DupFile, DupGroup};
+
+/// Fills in dimensions (cached in the DB), creation times and the recommended copy.
+pub fn enrich(conn: &Connection, groups: &mut [DupGroup]) -> Result<(), String> {
+    let mut save = conn
+        .prepare_cached("UPDATE files SET width = ?2, height = ?3 WHERE id = ?1")
+        .map_err(|e| e.to_string())?;
+
+    for g in groups.iter_mut() {
+        for f in g.files.iter_mut() {
+            if f.width.is_none() || f.height.is_none() {
+                // (0, 0) records "unreadable" so we don't retry on every listing.
+                let (w, h) = image::image_dimensions(&f.path).unwrap_or((0, 0));
+                save.execute(params![f.id, w, h]).map_err(|e| e.to_string())?;
+                f.width = Some(w);
+                f.height = Some(h);
+            }
+            f.created = fs::metadata(&f.path)
+                .and_then(|m| m.created())
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64);
+        }
+        g.keep_id = recommend(&g.files);
+    }
+    Ok(())
+}
+
+fn pixels(f: &DupFile) -> u64 {
+    f.width.unwrap_or(0) as u64 * f.height.unwrap_or(0) as u64
+}
+
+/// Earliest known timestamp: copies often get a fresh creation time, so a modified
+/// time that predates it is the better signal of age.
+fn age(f: &DupFile) -> i64 {
+    f.created.map_or(f.modified, |c| c.min(f.modified))
+}
+
+/// Highest resolution, then oldest, then path (for a deterministic result).
+pub fn recommend(files: &[DupFile]) -> i64 {
+    files
+        .iter()
+        .min_by(|a, b| {
+            pixels(b)
+                .cmp(&pixels(a))
+                .then(age(a).cmp(&age(b)))
+                .then(a.path.cmp(&b.path))
+        })
+        .map(|f| f.id)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn f(id: i64, path: &str, w: u32, h: u32, modified: i64, created: Option<i64>) -> DupFile {
+        DupFile { id, path: path.into(), modified, created, width: Some(w), height: Some(h) }
+    }
+
+    #[test]
+    fn prefers_highest_resolution() {
+        let files = [f(1, "a", 100, 100, 1, None), f(2, "b", 200, 200, 99, None)];
+        assert_eq!(recommend(&files), 2);
+    }
+
+    #[test]
+    fn then_prefers_oldest() {
+        let files = [f(1, "a", 100, 100, 50, None), f(2, "b", 100, 100, 10, None)];
+        assert_eq!(recommend(&files), 2);
+    }
+
+    #[test]
+    fn age_uses_earliest_of_created_and_modified() {
+        // 1 was created long ago (5) even though modified recently; 2 is newer overall.
+        let files = [f(1, "a", 10, 10, 90, Some(5)), f(2, "b", 10, 10, 20, Some(30))];
+        assert_eq!(recommend(&files), 1);
+    }
+
+    #[test]
+    fn then_path_is_deterministic_tiebreak() {
+        let files = [f(1, "b", 10, 10, 5, None), f(2, "a", 10, 10, 5, None)];
+        assert_eq!(recommend(&files), 2);
+    }
+
+    #[test]
+    fn unreadable_dimensions_lose_to_known_ones() {
+        let files = [f(1, "a", 0, 0, 1, None), f(2, "b", 10, 10, 99, None)];
+        assert_eq!(recommend(&files), 2);
+    }
+
+    #[test]
+    fn enrich_reads_and_caches_dimensions() {
+        let conn = crate::db::init(Connection::open_in_memory().unwrap()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let folder = crate::db::add_folder(&conn, dir.path().to_str().unwrap()).unwrap();
+        let mut ids = Vec::new();
+        for name in ["a.png", "b.png"] {
+            let p = dir.path().join(name);
+            image::RgbImage::new(7, 3).save(&p).unwrap();
+            conn.execute(
+                "INSERT INTO files (folder_id, path, size, mtime_ns, sha256, last_seen_scan)
+                 VALUES (?1, ?2, 1, 1, 'h', 1)",
+                params![folder.id, p.to_str().unwrap()],
+            )
+            .unwrap();
+            ids.push(conn.last_insert_rowid());
+        }
+        let mut groups = crate::scan::duplicate_groups(&conn).unwrap();
+        assert_eq!(groups.len(), 1);
+        enrich(&conn, &mut groups).unwrap();
+        assert_eq!(groups[0].files[0].width, Some(7));
+        assert_eq!(groups[0].files[0].height, Some(3));
+        assert!(groups[0].keep_id > 0);
+        let w: Option<u32> = conn
+            .query_row("SELECT width FROM files WHERE id = ?1", params![ids[0]], |r| r.get(0))
+            .unwrap();
+        assert_eq!(w, Some(7), "dimensions are cached in the database");
+    }
+}

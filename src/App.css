@@ -227,8 +227,34 @@ input[type="range"] { accent-color: var(--primary); max-width: 320px; }
 @keyframes slide { from { margin-left: 0; } to { margin-left: 65%; } }
 
 /* ---------- Duplicate groups ---------- */
-.group-list, .group-files { list-style: none; margin: 0; padding: 0; }
+.group-list { list-style: none; margin: 0; padding: 0; }
 .group-list { display: flex; flex-direction: column; gap: var(--s3); }
 .group { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4); }
 .group-head { display: flex; justify-content: space-between; gap: var(--s4); flex-wrap: wrap; }
-.group-files { display: flex; flex-direction: column; gap: var(--s1); }
+
+.copies { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: var(--s3); }
+.copy {
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.copy.recommended {
+  border-color: var(--success);
+  box-shadow: 0 0 calc(14px * var(--glow)) color-mix(in srgb, var(--success) 55%, transparent);
+}
+.thumb {
+  position: relative; aspect-ratio: 4 / 3; display: grid; place-items: center;
+  background: repeating-conic-gradient(var(--border) 0 25%, transparent 0 50%) 0 0 / 16px 16px;
+}
+.thumb img { width: 100%; height: 100%; object-fit: contain; }
+.thumb-fallback { color: var(--muted); font-size: 14px; }
+.keep-badge {
+  position: absolute; top: var(--s2); left: var(--s2);
+  padding: 2px var(--s2); border-radius: 999px; font-size: 12px; font-weight: 500;
+  background: #15803d; color: #fff;
+}
+.copy-info { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s3); min-width: 0; }
+.copy-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.copy-folder { font-family: var(--font-mono); font-size: 14px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.copy-meta { display: grid; grid-template-columns: auto 1fr; gap: 2px var(--s3); margin: var(--s2) 0 0; font-size: 13px; }
+.copy-meta dt { color: var(--muted); }
+.copy-meta dd { margin: 0; text-align: right; }

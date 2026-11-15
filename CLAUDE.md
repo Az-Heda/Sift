@@ -16,7 +16,7 @@ I'd organize the product into six main features.
 
 - Add multiple folders.
 - Scan subfolders recursively.
-- Support images initially: JPG, PNG, WEBP, GIF, TIFF, HEIC.
+- Support images initially: JPG, PNG, WEBP, GIF, TIFF. HEIC/HEIF is intentionally not supported: those files are ignored entirely by scanning.
 - Later support videos, PDFs, audio, archives and other files.
 - Automatically detect newly added or modified files.
 - Allow manual rescanning.
@@ -54,7 +54,7 @@ Show:
 - Date created and modified.
 - Resolution.
 - Number of copies.
-- Which copy is recommended to keep.
+- Which copy is recommended to keep: highest resolution first, then the oldest file (earliest of created/modified), then path as a deterministic tiebreaker.
 
 Allow users to:
 

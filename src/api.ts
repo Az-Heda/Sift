@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 export interface Folder {
@@ -49,6 +49,12 @@ export interface ScanStatus {
 export interface DupFile {
   id: number;
   path: string;
+  /** Unix seconds. */
+  modified: number;
+  created: number | null;
+  /** 0 x 0 means the dimensions could not be read. */
+  width: number | null;
+  height: number | null;
 }
 
 export interface DupGroup {
@@ -56,6 +62,7 @@ export interface DupGroup {
   size: number;
   files: DupFile[];
   wasted: number;
+  keep_id: number;
 }
 
 export interface Stats {
@@ -71,3 +78,6 @@ export const cancelScan = () => invoke<void>("cancel_scan");
 export const scanStatus = () => invoke<ScanStatus>("scan_status");
 export const listDuplicates = () => invoke<DupGroup[]>("list_duplicates");
 export const getStats = () => invoke<Stats>("get_stats");
+
+/** URL of the cached thumbnail for a tracked file (served by the `thumb://` scheme). */
+export const thumbUrl = (fileId: number) => convertFileSrc(String(fileId), "thumb");

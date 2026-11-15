@@ -17,7 +17,7 @@ const BATCH: usize = 500;
 const HASH_BATCH: usize = 100;
 const BUF_SIZE: usize = 128 * 1024;
 
-const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "tif", "tiff", "heic", "heif"];
+const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "tif", "tiff"];
 
 /// Directories that are never descended into (compared case-insensitively).
 const EXCLUDED_DIRS: &[&str] = &[
@@ -118,6 +118,10 @@ fn flush_rows(conn: &mut Connection, rows: &mut Vec<Row>, scan_id: i64) -> Resul
                     last_seen_scan = excluded.last_seen_scan,
                     sha256 = CASE WHEN files.size = excluded.size AND files.mtime_ns = excluded.mtime_ns
                                   THEN files.sha256 ELSE NULL END,
+                    width = CASE WHEN files.size = excluded.size AND files.mtime_ns = excluded.mtime_ns
+                                 THEN files.width ELSE NULL END,
+                    height = CASE WHEN files.size = excluded.size AND files.mtime_ns = excluded.mtime_ns
+                                  THEN files.height ELSE NULL END,
                     size = excluded.size,
                     mtime_ns = excluded.mtime_ns",
             )
@@ -337,6 +341,12 @@ pub fn run(
 pub struct DupFile {
     pub id: i64,
     pub path: String,
+    /// Last modified, Unix seconds.
+    pub modified: i64,
+    /// Creation time, Unix seconds, when the filesystem reports one (filled by `review::enrich`).
+    pub created: Option<i64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -346,6 +356,8 @@ pub struct DupGroup {
     pub files: Vec<DupFile>,
     /// Bytes recoverable by keeping one physical copy. Hard links don't count.
     pub wasted: i64,
+    /// Id of the copy recommended to keep (filled by `review::enrich`).
+    pub keep_id: i64,
 }
 
 /// Groups of byte-identical files. Hard links to one physical file count as a single copy,
@@ -353,7 +365,7 @@ pub struct DupGroup {
 pub fn duplicate_groups(conn: &Connection) -> Result<Vec<DupGroup>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, path, size, sha256, file_id FROM files
+            "SELECT id, path, size, sha256, file_id, mtime_ns, width, height FROM files
              WHERE sha256 IN (SELECT sha256 FROM files WHERE sha256 IS NOT NULL
                               GROUP BY sha256 HAVING COUNT(*) > 1)
              ORDER BY sha256, path",
@@ -367,6 +379,9 @@ pub fn duplicate_groups(conn: &Connection) -> Result<Vec<DupGroup>, String> {
                 r.get::<_, i64>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, Option<String>>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, Option<u32>>(6)?,
+                r.get::<_, Option<u32>>(7)?,
             ))
         })
         .map_err(|e| e.to_string())?;
@@ -374,7 +389,7 @@ pub fn duplicate_groups(conn: &Connection) -> Result<Vec<DupGroup>, String> {
     let mut by_hash: HashMap<String, (i64, Vec<(DupFile, Option<String>)>)> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
     for row in rows {
-        let (id, path, size, sha, fid) = row.map_err(|e| e.to_string())?;
+        let (id, path, size, sha, fid, mtime, width, height) = row.map_err(|e| e.to_string())?;
         if !Path::new(&path).is_file() {
             continue;
         }
@@ -382,7 +397,10 @@ pub fn duplicate_groups(conn: &Connection) -> Result<Vec<DupGroup>, String> {
             order.push(sha.clone());
             (size, Vec::new())
         });
-        entry.1.push((DupFile { id, path }, fid));
+        entry.1.push((
+            DupFile { id, path, modified: mtime / 1_000_000_000, created: None, width, height },
+            fid,
+        ));
     }
 
     let mut groups = Vec::new();
@@ -405,6 +423,7 @@ pub fn duplicate_groups(conn: &Connection) -> Result<Vec<DupGroup>, String> {
             sha256: sha,
             size,
             wasted: size * (copies as i64 - 1),
+            keep_id: 0,
             files: files.into_iter().map(|(f, _)| f).collect(),
         });
     }
@@ -557,6 +576,9 @@ mod tests {
     #[test]
     fn ignores_empty_and_non_image_files() {
         let mut e = env();
+        write(&e, "photo1.heic", b"heic-bytes");
+        write(&e, "photo2.HEIC", b"heic-bytes");
+        write(&e, "photo3.heif", b"heic-bytes");
         write(&e, "empty1.jpg", b"");
         write(&e, "empty2.jpg", b"");
         write(&e, "notes.txt", b"hello");

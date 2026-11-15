@@ -38,6 +38,9 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX files_sha ON files(sha256);
     CREATE INDEX files_folder ON files(folder_id);
     ALTER TABLE folders ADD COLUMN last_scanned_at INTEGER;",
+    // Image dimensions, filled lazily when duplicates are listed (0x0 = unreadable).
+    "ALTER TABLE files ADD COLUMN width INTEGER;
+    ALTER TABLE files ADD COLUMN height INTEGER;",
 ];
 
 #[derive(Debug, Serialize, PartialEq)]

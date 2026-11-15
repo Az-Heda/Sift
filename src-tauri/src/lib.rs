@@ -1,5 +1,7 @@
 mod db;
+mod review;
 mod scan;
+mod thumbs;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -113,7 +115,11 @@ fn scan_status(state: State<'_, ScanState>) -> Result<ScanStatus, String> {
 
 #[tauri::command]
 async fn list_duplicates(db: State<'_, Db>) -> Result<Vec<scan::DupGroup>, String> {
-    db.with(scan::duplicate_groups)
+    db.with(|c| {
+        let mut groups = scan::duplicate_groups(c)?;
+        review::enrich(c, &mut groups)?;
+        Ok(groups)
+    })
 }
 
 #[tauri::command]
@@ -151,6 +157,27 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .register_asynchronous_uri_scheme_protocol("thumb", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let id = request.uri().path().trim_start_matches('/').parse::<i64>();
+            // Decoding is CPU/IO heavy: keep it off the main thread.
+            tauri::async_runtime::spawn_blocking(move || {
+                let result = id.map_err(|e| e.to_string()).and_then(|id| {
+                    let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("thumbs");
+                    thumbs::thumbnail(&app.state::<Db>().0, &cache, id)
+                });
+                let response = match result {
+                    Ok(t) => tauri::http::Response::builder()
+                        .header("Content-Type", t.mime)
+                        .header("Cache-Control", "max-age=3600")
+                        .body(t.bytes),
+                    Err(_) => tauri::http::Response::builder().status(404).body(Vec::new()),
+                };
+                if let Ok(r) = response {
+                    responder.respond(r);
+                }
+            });
+        })
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
