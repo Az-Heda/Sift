@@ -59,19 +59,62 @@ pub fn begin_scan(conn: &Connection) -> Result<i64, String> {
     Ok(conn.last_insert_rowid())
 }
 
-fn is_image(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| IMAGE_EXTS.contains(&e.to_ascii_lowercase().as_str()))
-        .unwrap_or(false)
+/// User-adjustable scan preferences (Settings screen).
+#[derive(Clone, Debug)]
+pub struct Config {
+    /// Directories (absolute) that are never descended into.
+    pub excluded_paths: Vec<std::path::PathBuf>,
+    /// Lowercase extensions to scan, without the dot.
+    pub extensions: Vec<String>,
 }
 
-fn is_excluded(entry: &DirEntry) -> bool {
-    if entry.depth() == 0 || !entry.file_type().is_dir() {
-        return false;
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            excluded_paths: Vec::new(),
+            extensions: IMAGE_EXTS.iter().map(|e| e.to_string()).collect(),
+        }
     }
-    let name = entry.file_name().to_string_lossy().to_lowercase();
-    EXCLUDED_DIRS.contains(&name.as_str()) || name.starts_with(".trash-")
+}
+
+impl Config {
+    /// Reads preferences from the settings table; missing or invalid values fall back to defaults.
+    /// Only supported image extensions are ever honoured.
+    pub fn load(conn: &Connection) -> Result<Config, String> {
+        let mut cfg = Config::default();
+        if let Some(raw) = crate::db::get_setting(conn, "scan.excluded_paths")? {
+            if let Ok(list) = serde_json::from_str::<Vec<String>>(&raw) {
+                cfg.excluded_paths = list.into_iter().map(Into::into).collect();
+            }
+        }
+        if let Some(raw) = crate::db::get_setting(conn, "scan.file_types")? {
+            if let Ok(list) = serde_json::from_str::<Vec<String>>(&raw) {
+                cfg.extensions = list
+                    .into_iter()
+                    .map(|e| e.to_ascii_lowercase())
+                    .filter(|e| IMAGE_EXTS.contains(&e.as_str()))
+                    .collect();
+            }
+        }
+        Ok(cfg)
+    }
+
+    fn is_image(&self, path: &Path) -> bool {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| self.extensions.contains(&e.to_ascii_lowercase()))
+            .unwrap_or(false)
+    }
+
+    fn is_excluded(&self, entry: &DirEntry) -> bool {
+        if entry.depth() == 0 || !entry.file_type().is_dir() {
+            return false;
+        }
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        EXCLUDED_DIRS.contains(&name.as_str())
+            || name.starts_with(".trash-")
+            || self.excluded_paths.iter().any(|p| entry.path().starts_with(p))
+    }
 }
 
 fn mtime_ns(md: &fs::Metadata) -> i64 {
@@ -179,6 +222,7 @@ pub fn run(
     conn: &mut Connection,
     scan_id: i64,
     cancel: &AtomicBool,
+    config: &Config,
     on_progress: &mut dyn FnMut(&Progress),
 ) -> Result<Summary, String> {
     let mut p = Progress { phase: "discovering", ..Default::default() };
@@ -195,7 +239,7 @@ pub fn run(
         let walker = WalkDir::new(&root)
             .follow_links(false)
             .into_iter()
-            .filter_entry(|e| !is_excluded(e));
+            .filter_entry(|e| !config.is_excluded(e));
         for entry in walker {
             if cancel.load(Ordering::Relaxed) {
                 cancelled = true;
@@ -209,7 +253,7 @@ pub fn run(
                 }
             };
             // Symlinks report as symlinks (not files) when links aren't followed.
-            if !entry.file_type().is_file() || !is_image(entry.path()) {
+            if !entry.file_type().is_file() || !config.is_image(entry.path()) {
                 continue;
             }
             let (Some(path), Ok(md)) = (entry.path().to_str(), entry.metadata()) else {
@@ -463,6 +507,55 @@ pub fn stats(conn: &Connection) -> Result<Stats, String> {
     })
 }
 
+#[derive(Debug, Serialize, PartialEq)]
+pub struct Insight {
+    pub label: String,
+    /// Files in duplicate groups.
+    pub count: i64,
+    /// Bytes those files could free (every copy but one per group).
+    pub wasted: i64,
+}
+
+#[derive(Debug, Serialize, Default, PartialEq)]
+pub struct Insights {
+    pub folders: Vec<Insight>,
+    pub types: Vec<Insight>,
+}
+
+const TOP_N: usize = 5;
+
+/// Which folders hold the most duplicate files and which file types are duplicated most.
+pub fn insights(conn: &Connection) -> Result<Insights, String> {
+    let groups = duplicate_groups(conn)?;
+    let mut folders: HashMap<String, Insight> = HashMap::new();
+    let mut types: HashMap<String, Insight> = HashMap::new();
+    for g in &groups {
+        let n = g.files.len() as i64;
+        // Spread the group's wasted bytes across its files so totals add up.
+        let share = g.wasted / n.max(1);
+        for f in &g.files {
+            let p = Path::new(&f.path);
+            let folder = p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+            let ext = p
+                .extension()
+                .map(|e| e.to_string_lossy().to_ascii_uppercase())
+                .unwrap_or_else(|| "?".into());
+            for (map, key) in [(&mut folders, folder), (&mut types, ext)] {
+                let e = map.entry(key.clone()).or_insert(Insight { label: key, count: 0, wasted: 0 });
+                e.count += 1;
+                e.wasted += share;
+            }
+        }
+    }
+    let top = |m: HashMap<String, Insight>| {
+        let mut v: Vec<Insight> = m.into_values().collect();
+        v.sort_by(|a, b| b.count.cmp(&a.count).then(a.label.cmp(&b.label)));
+        v.truncate(TOP_N);
+        v
+    };
+    Ok(Insights { folders: top(folders), types: top(types) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,7 +586,7 @@ mod tests {
 
     fn scan_with(env: &mut Env, cancel: &AtomicBool) -> Summary {
         let id = begin_scan(&env.conn).unwrap();
-        run(&mut env.conn, id, cancel, &mut |_| {}).unwrap()
+        run(&mut env.conn, id, cancel, &Config::default(), &mut |_| {}).unwrap()
     }
 
     fn count_files(env: &Env) -> i64 {
@@ -646,5 +739,46 @@ mod tests {
         let s = stats(&e.conn).unwrap();
         assert_eq!((s.files, s.bytes, s.groups, s.wasted), (3, 10, 1, 4));
         assert!(s.last_scan_at.is_some());
+    }
+
+    #[test]
+    fn excluded_paths_and_file_types_are_honoured() {
+        let mut e = env();
+        write(&e, "keep.jpg", b"k");
+        write(&e, "keep.png", b"k");
+        write(&e, "skip/a.jpg", b"k");
+        let cfg = Config {
+            excluded_paths: vec![e.dir.path().join("skip")],
+            extensions: vec!["jpg".into()],
+        };
+        let id = begin_scan(&e.conn).unwrap();
+        let s = run(&mut e.conn, id, &AtomicBool::new(false), &cfg, &mut |_| {}).unwrap();
+        assert_eq!(s.files_seen, 1);
+    }
+
+    #[test]
+    fn config_loads_from_settings_and_ignores_unsupported_types() {
+        let e = env();
+        assert_eq!(Config::load(&e.conn).unwrap().extensions.len(), IMAGE_EXTS.len());
+        crate::db::set_setting(&e.conn, "scan.file_types", r#"["PNG","heic"]"#).unwrap();
+        crate::db::set_setting(&e.conn, "scan.excluded_paths", r#"["/x/y"]"#).unwrap();
+        let cfg = Config::load(&e.conn).unwrap();
+        assert_eq!(cfg.extensions, vec!["png".to_string()]);
+        assert_eq!(cfg.excluded_paths, vec![PathBuf::from("/x/y")]);
+    }
+
+    #[test]
+    fn insights_rank_folders_and_types() {
+        let mut e = env();
+        write(&e, "a/1.jpg", b"1234");
+        write(&e, "b/1.jpg", b"1234");
+        write(&e, "a/2.png", b"12345");
+        write(&e, "a/3.png", b"12345");
+        scan(&mut e);
+        let i = insights(&e.conn).unwrap();
+        assert_eq!(i.folders[0].count, 3);
+        assert!(i.folders[0].label.ends_with('a'));
+        assert_eq!(i.types.len(), 2);
+        assert_eq!(i.types.iter().map(|t| t.count).sum::<i64>(), 4);
     }
 }

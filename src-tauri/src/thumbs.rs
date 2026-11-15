@@ -100,6 +100,41 @@ pub fn thumbnail(conn: &Mutex<Connection>, cache_dir: &Path, id: i64) -> Result<
     Ok(Thumb { bytes: fs::read(&dest).map_err(|e| e.to_string())?, mime: mime_for(&dest) })
 }
 
+/// The original image for the Compare screen. Formats a webview can't display (TIFF)
+/// are converted to PNG on the fly.
+pub fn full_image(conn: &Mutex<Connection>, id: i64) -> Result<Thumb, String> {
+    let path: String = {
+        let c = conn.lock().map_err(|_| "database lock poisoned".to_string())?;
+        c.query_row("SELECT path FROM files WHERE id = ?1", params![id], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or("unknown file")?
+    };
+    let ext = Path::new(&path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => {
+            let _permit = Permit::acquire();
+            let img = ImageReader::open(&path)
+                .map_err(|e| e.to_string())?
+                .with_guessed_format()
+                .map_err(|e| e.to_string())?
+                .decode()
+                .map_err(|e| e.to_string())?;
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+            return Ok(Thumb { bytes: out.into_inner(), mime: "image/png" });
+        }
+    };
+    Ok(Thumb { bytes: fs::read(&path).map_err(|e| e.to_string())?, mime })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +180,19 @@ mod tests {
         let cache = dir.path().join("cache");
         assert!(thumbnail(&conn, &cache, id).is_err());
         assert!(thumbnail(&conn, &cache, 9999).is_err());
+    }
+
+    #[test]
+    fn full_image_serves_original_and_converts_tiff() {
+        let (conn, _d, id) = setup("p.png", |p| image::RgbImage::new(40, 20).save(p).unwrap());
+        let f = full_image(&conn, id).unwrap();
+        assert_eq!(f.mime, "image/png");
+        assert_eq!(image::load_from_memory(&f.bytes).unwrap().width(), 40);
+
+        let (conn, _d, id) = setup("t.tiff", |p| image::RgbImage::new(8, 8).save(p).unwrap());
+        let f = full_image(&conn, id).unwrap();
+        assert_eq!(f.mime, "image/png");
+        assert!(image::load_from_memory(&f.bytes).is_ok());
+        assert!(full_image(&conn, 9999).is_err());
     }
 }

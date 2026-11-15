@@ -68,10 +68,11 @@ fn start_scan(app: AppHandle, state: State<'_, ScanState>, path: State<'_, DbPat
         let _guard = ClearOnDrop(app.clone());
         let result = (|| {
             let mut conn = db::open(&db_path)?;
+            let config = scan::Config::load(&conn)?;
             let scan_id = scan::begin_scan(&conn)?;
             let mut last_emit = Instant::now() - Duration::from_secs(1);
             let handle = app.clone();
-            scan::run(&mut conn, scan_id, &cancel, &mut |p| {
+            scan::run(&mut conn, scan_id, &cancel, &config, &mut |p| {
                 if let Ok(mut g) = handle.state::<ScanState>().0.lock() {
                     if let Some(r) = g.as_mut() {
                         r.progress = Some(p.clone());
@@ -128,6 +129,33 @@ async fn get_stats(db: State<'_, Db>) -> Result<scan::Stats, String> {
 }
 
 #[tauri::command]
+async fn get_insights(db: State<'_, Db>) -> Result<scan::Insights, String> {
+    db.with(scan::insights)
+}
+
+fn tracked_path(db: &Db, id: i64) -> Result<String, String> {
+    db.with(|c| {
+        c.query_row("SELECT path FROM files WHERE id = ?1", [id], |r| r.get(0))
+            .map_err(|_| "unknown file".to_string())
+    })
+}
+
+/// Shows the file selected in the OS file manager. Only tracked files are accepted.
+#[tauri::command]
+async fn reveal_file(db: State<'_, Db>, id: i64) -> Result<(), String> {
+    let path = tracked_path(&db, id)?;
+    tauri_plugin_opener::reveal_item_in_dir(path).map_err(|e| e.to_string())
+}
+
+/// Opens the folder that contains a tracked file.
+#[tauri::command]
+async fn open_containing_folder(db: State<'_, Db>, id: i64) -> Result<(), String> {
+    let path = tracked_path(&db, id)?;
+    let dir = std::path::Path::new(&path).parent().ok_or("file has no parent folder")?;
+    tauri_plugin_opener::open_path(dir, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn list_folders(db: State<'_, Db>) -> Result<Vec<db::Folder>, String> {
     db.with(db::list_folders)
 }
@@ -159,10 +187,20 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("thumb", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
-            let id = request.uri().path().trim_start_matches('/').parse::<i64>();
+            // `/<id>` is a thumbnail, `/full-<id>` the original image. (No slash in the
+            // second form: the frontend percent-encodes the path it hands to the scheme.)
+            let path = request.uri().path().trim_start_matches('/').to_owned();
+            let (id_part, full) = match path.strip_prefix("full-") {
+                Some(p) => (p.to_owned(), true),
+                None => (path, false),
+            };
+            let id = id_part.parse::<i64>();
             // Decoding is CPU/IO heavy: keep it off the main thread.
             tauri::async_runtime::spawn_blocking(move || {
                 let result = id.map_err(|e| e.to_string()).and_then(|id| {
+                    if full {
+                        return thumbs::full_image(&app.state::<Db>().0, id);
+                    }
                     let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("thumbs");
                     thumbs::thumbnail(&app.state::<Db>().0, &cache, id)
                 });
@@ -198,7 +236,10 @@ pub fn run() {
             cancel_scan,
             scan_status,
             list_duplicates,
-            get_stats
+            get_stats,
+            get_insights,
+            reveal_file,
+            open_containing_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sift");

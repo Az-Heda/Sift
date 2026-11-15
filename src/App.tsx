@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import "./App.css";
 import Sidebar, { type ScreenId } from "./components/Sidebar";
 import Compare from "./screens/Compare";
@@ -6,6 +6,7 @@ import Dashboard from "./screens/Dashboard";
 import Duplicates from "./screens/Duplicates";
 import Folders from "./screens/Folders";
 import Settings from "./screens/Settings";
+import { ReviewProvider } from "./review/ReviewProvider";
 
 const SCREENS: Record<ScreenId, () => React.JSX.Element> = {
   dashboard: Dashboard,
@@ -18,14 +19,17 @@ const SCREENS: Record<ScreenId, () => React.JSX.Element> = {
 function App() {
   const [active, setActive] = useState<ScreenId>("dashboard");
   const Current = SCREENS[active];
+  const goCompare = useCallback(() => setActive("compare"), []);
 
   return (
-    <div className="app">
-      <Sidebar active={active} onSelect={setActive} />
-      <main className="content">
-        <Current />
-      </main>
-    </div>
+    <ReviewProvider onCompare={goCompare}>
+      <div className="app">
+        <Sidebar active={active} onSelect={setActive} />
+        <main className="content">
+          <Current />
+        </main>
+      </div>
+    </ReviewProvider>
   );
 }
 

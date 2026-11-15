@@ -81,3 +81,34 @@ export const getStats = () => invoke<Stats>("get_stats");
 
 /** URL of the cached thumbnail for a tracked file (served by the `thumb://` scheme). */
 export const thumbUrl = (fileId: number) => convertFileSrc(String(fileId), "thumb");
+
+/** URL of the original, full-resolution image for a tracked file. */
+export const fullUrl = (fileId: number) => convertFileSrc(`full-${fileId}`, "thumb");
+
+export interface Insight {
+  label: string;
+  count: number;
+  wasted: number;
+}
+
+export interface Insights {
+  folders: Insight[];
+  types: Insight[];
+}
+
+export const getInsights = () => invoke<Insights>("get_insights");
+export const revealFile = (id: number) => invoke<void>("reveal_file", { id });
+export const openContainingFolder = (id: number) => invoke<void>("open_containing_folder", { id });
+
+/** Reads a JSON-encoded string list from settings. */
+export async function getList(key: string): Promise<string[] | null> {
+  const raw = await getSetting(key);
+  if (raw === null) return null;
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : null;
+  } catch {
+    return null;
+  }
+}
+export const setList = (key: string, list: string[]) => setSetting(key, JSON.stringify(list));
