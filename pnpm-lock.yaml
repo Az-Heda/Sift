@@ -8,6 +8,15 @@ importers:
 
   .:
     dependencies:
+      '@fontsource/anonymous-pro':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/audiowide':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/roboto':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@tauri-apps/api':
         specifier: ^2
         version: 2.12.4
@@ -50,6 +59,15 @@ packages:
 
   '@emnapi/wasi-threads@2.2.0':
     resolution: {integrity: sha512-JP7OYH38Q7+pyTAe14raZHLQIK7BDKbdwji+Xi3pcd/6QkJYQH3SX4wu6EplGrGJWRepoNzedfm0G3B9Z4e9Rw==}
+
+  '@fontsource/anonymous-pro@5.3.0':
+    resolution: {integrity: sha512-zoJ/iLJYCkMsjwEgqM6rQr2KmRk+v9+G90NOPxBm1RCN2rjX5kk0t0MoUkzYMT+51jWuIfPGCD/YcZXlNFqMKA==}
+
+  '@fontsource/audiowide@5.3.0':
+    resolution: {integrity: sha512-ECBdWgQPaCSuwlFyeXzV0i2DAGq0SKID7jxD1oHhYTObx3wz26YKs3F9Ic/EO369Anzld9IqxflRukJm6nVxpw==}
+
+  '@fontsource/roboto@5.3.0':
+    resolution: {integrity: sha512-BapRJOWYP+LZ21zp+wBQjfpPYKRoxc4LspJ/RLuI+HSMBD5u/X4O+ESDrSvEqDSy0rAl7GwBJ+09mdc16cVQ1Q==}
 
   '@napi-rs/wasm-runtime@1.2.6':
     resolution: {integrity: sha512-mRyDmEw9/fCDXCGfL1sbgIw/GUK0PVxRW4YwgPN61F3LQ+fSyoBFarJVzgGyhF6kRzEQZ0FejDqm4WLXSeqQmw==}
@@ -478,6 +496,12 @@ snapshots:
     dependencies:
       tslib: 2.9.1
     optional: true
+
+  '@fontsource/anonymous-pro@5.3.0': {}
+
+  '@fontsource/audiowide@5.3.0': {}
+
+  '@fontsource/roboto@5.3.0': {}
 
   '@napi-rs/wasm-runtime@1.2.6(@emnapi/core@2.0.0-beta.2)(@emnapi/runtime@2.0.0-beta.2)':
     dependencies:
