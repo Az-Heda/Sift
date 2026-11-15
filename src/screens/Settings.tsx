@@ -1,14 +1,23 @@
+import { FolderSearch2, RotateCcw, Save } from "lucide-react";
 import { useEffect, useState } from "react";
-import { getList, pickFolder, setList } from "../api";
+import {
+  getList,
+  getQuarantineDir,
+  pickFolder,
+  setList,
+  setQuarantineDir,
+  type QuarantineDir,
+} from "../api";
+import { LANGS, useI18n, type LangPref, type MsgKey } from "../i18n";
 import { ALL_EXTS, FILE_TYPES } from "../review/types";
 import { useTheme } from "../theme/ThemeProvider";
 import { PRESETS, type ThemeMode } from "../theme/theme";
 import { Screen } from "./Placeholder";
 
-const MODES: { id: ThemeMode; label: string }[] = [
-  { id: "system", label: "System" },
-  { id: "light", label: "Light" },
-  { id: "dark", label: "Dark" },
+const MODES: { id: ThemeMode; label: MsgKey }[] = [
+  { id: "system", label: "settings.appearance.system" },
+  { id: "light", label: "settings.appearance.light" },
+  { id: "dark", label: "settings.appearance.dark" },
 ];
 
 const TYPES_KEY = "scan.file_types";
@@ -16,6 +25,7 @@ const EXCLUDED_KEY = "scan.excluded_paths";
 const errMsg = (e: unknown) => (typeof e === "string" ? e : (e as Error)?.message ?? "Unknown error");
 
 function Scanning() {
+  const { t } = useI18n();
   const [exts, setExts] = useState<string[]>(ALL_EXTS);
   const [excluded, setExcluded] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -53,13 +63,13 @@ function Scanning() {
 
   return (
     <div className="card form">
-      <h2>Scanning</h2>
+      <h2>{t("settings.scan.title")}</h2>
       {error && <div className="alert" role="alert">{error}</div>}
-      <p className="muted">Changes apply to the next scan.</p>
+      <p className="muted">{t("settings.scan.applies")}</p>
 
       <div className="field">
-        <span className="field-label">File types to scan</span>
-        <div className="chips" role="group" aria-label="File types to scan">
+        <span className="field-label">{t("settings.scan.types")}</span>
+        <div className="chips" role="group" aria-label={t("settings.scan.types")}>
           {FILE_TYPES.map((t) => (
             <button
               key={t.id}
@@ -74,11 +84,9 @@ function Scanning() {
       </div>
 
       <div className="field">
-        <span className="field-label">Excluded folders</span>
+        <span className="field-label">{t("settings.scan.excluded")}</span>
         {excluded.length === 0 ? (
-          <span className="muted">
-            None. System folders such as .git, node_modules and caches are always skipped.
-          </span>
+          <span className="muted">{t("settings.scan.noneExcluded")}</span>
         ) : (
           <ul className="excluded-list">
             {excluded.map((p) => (
@@ -88,29 +96,159 @@ function Scanning() {
                   className="btn small"
                   onClick={() => void save(EXCLUDED_KEY, excluded.filter((x) => x !== p), setExcluded)}
                 >
-                  Remove
+                  {t("common.remove")}
                 </button>
               </li>
             ))}
           </ul>
         )}
-        <button className="btn ghost" onClick={() => void addExcluded()}>Exclude a folder…</button>
+        <button className="btn ghost" onClick={() => void addExcluded()}>{t("settings.scan.exclude")}</button>
       </div>
+    </div>
+  );
+}
+
+function QuarantineSettings() {
+  const { t } = useI18n();
+  const [dir, setDir] = useState<QuarantineDir | null>(null);
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    getQuarantineDir()
+      .then((d) => {
+        setDir(d);
+        setValue(d.path);
+      })
+      .catch((e) => setError(errMsg(e)));
+  }, []);
+
+  async function apply(path: string) {
+    setSaved(false);
+    try {
+      const d = await setQuarantineDir(path);
+      setDir(d);
+      setValue(d.path);
+      setError(null);
+      setSaved(true);
+    } catch (e) {
+      setError(errMsg(e));
+    }
+  }
+
+  async function browse() {
+    try {
+      const p = await pickFolder();
+      if (p) setValue(p);
+    } catch (e) {
+      setError(errMsg(e));
+    }
+  }
+
+  const isDefault = !dir || dir.path === dir.default;
+  const changed = !!dir && value.trim() !== dir.path;
+
+  return (
+    <div className="card form">
+      <h2>{t("settings.q.title")}</h2>
+      {error && <div className="alert" role="alert">{error}</div>}
+      <label className="field">
+        <span className="field-label">{t("settings.q.label")}</span>
+        <div className="path-row">
+          <input
+            className="input grow mono"
+            value={value}
+            spellCheck={false}
+            onChange={(e) => {
+              setValue(e.target.value);
+              setSaved(false);
+            }}
+            onKeyDown={(e) => e.key === "Enter" && changed && void apply(value)}
+          />
+          <button
+            className="btn icon"
+            title={t("settings.q.browse")}
+            aria-label={t("settings.q.browse")}
+            onClick={() => void browse()}
+          >
+            <FolderSearch2 size={18} aria-hidden="true" />
+          </button>
+          <button
+            className="btn icon primary"
+            title={t("settings.q.save")}
+            aria-label={t("settings.q.save")}
+            disabled={!changed}
+            onClick={() => void apply(value)}
+          >
+            <Save size={18} aria-hidden="true" />
+          </button>
+          <button
+            className="btn icon"
+            title={t("settings.q.reset")}
+            aria-label={t("settings.q.reset")}
+            disabled={isDefault && !changed}
+            onClick={() => void apply("")}
+          >
+            <RotateCcw size={18} aria-hidden="true" />
+          </button>
+        </div>
+      </label>
+      <p className="muted">
+        {t("settings.q.note")}
+        {saved && <strong> {t("settings.q.saved")}</strong>}
+      </p>
+    </div>
+  );
+}
+
+function LanguageSettings() {
+  const { t, lang, pref, setPref } = useI18n();
+  const [error, setError] = useState<string | null>(null);
+
+  const options: { id: LangPref; label: string }[] = [
+    { id: "system", label: t("settings.lang.system") },
+    ...LANGS.map((l) => ({ id: l as LangPref, label: t(`lang.${l}` as MsgKey) })),
+  ];
+
+  return (
+    <div className="card form">
+      <h2>{t("settings.lang.title")}</h2>
+      {error && <div className="alert" role="alert">{error}</div>}
+      <div className="field">
+        <span className="field-label" id="lang-label">{t("settings.lang.label")}</span>
+        <div className="segmented" role="radiogroup" aria-labelledby="lang-label">
+          {options.map((o) => (
+            <button
+              key={o.id}
+              role="radio"
+              aria-checked={pref === o.id}
+              className={pref === o.id ? "seg active" : "seg"}
+              onClick={() => setPref(o.id).then(() => setError(null), (e) => setError(errMsg(e)))}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="muted">{t("settings.lang.current", { name: t(`lang.${lang}` as MsgKey) })}</p>
     </div>
   );
 }
 
 export default function Settings() {
   const { theme, update, reset } = useTheme();
+  const { t } = useI18n();
 
   return (
-    <Screen title="Settings" subtitle="Appearance, excluded folders and scanning preferences.">
+    <Screen title={t("settings.title")} subtitle={t("settings.subtitle")}>
       <Scanning />
+      <QuarantineSettings />
       <div className="card form">
-        <h2>Appearance</h2>
+        <h2>{t("settings.appearance.title")}</h2>
 
         <div className="field">
-          <span className="field-label" id="mode-label">Mode</span>
+          <span className="field-label" id="mode-label">{t("settings.appearance.mode")}</span>
           <div className="segmented" role="radiogroup" aria-labelledby="mode-label">
             {MODES.map((m) => (
               <button
@@ -120,14 +258,14 @@ export default function Settings() {
                 className={theme.mode === m.id ? "seg active" : "seg"}
                 onClick={() => update({ mode: m.id })}
               >
-                {m.label}
+                {t(m.label)}
               </button>
             ))}
           </div>
         </div>
 
         <div className="field">
-          <span className="field-label">Presets</span>
+          <span className="field-label">{t("settings.appearance.presets")}</span>
           <div className="presets">
             {PRESETS.map((p) => (
               <button
@@ -147,7 +285,7 @@ export default function Settings() {
 
         <div className="field row">
           <label className="color">
-            <span className="field-label">Primary</span>
+            <span className="field-label">{t("settings.appearance.primary")}</span>
             <input
               type="color"
               value={theme.primary}
@@ -155,7 +293,7 @@ export default function Settings() {
             />
           </label>
           <label className="color">
-            <span className="field-label">Secondary</span>
+            <span className="field-label">{t("settings.appearance.secondary")}</span>
             <input
               type="color"
               value={theme.secondary}
@@ -165,7 +303,7 @@ export default function Settings() {
         </div>
 
         <label className="field">
-          <span className="field-label">Glow ({theme.glow}%)</span>
+          <span className="field-label">{t("settings.appearance.glow", { value: theme.glow })}</span>
           <input
             type="range"
             min={0}
@@ -176,7 +314,7 @@ export default function Settings() {
         </label>
 
         <label className="field">
-          <span className="field-label">Corner radius ({theme.radius}px)</span>
+          <span className="field-label">{t("settings.appearance.radius", { value: theme.radius })}</span>
           <input
             type="range"
             min={0}
@@ -187,9 +325,11 @@ export default function Settings() {
         </label>
 
         <div className="field">
-          <button className="btn ghost" onClick={reset}>Reset to defaults</button>
+          <button className="btn ghost" onClick={reset}>{t("settings.appearance.reset")}</button>
         </div>
       </div>
+
+      <LanguageSettings />
     </Screen>
   );
 }

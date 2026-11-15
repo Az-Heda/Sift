@@ -72,6 +72,20 @@ fn generate(src: &str, cache_dir: &Path, key: &str) -> Result<PathBuf, String> {
     Ok(dest)
 }
 
+/// Serves the cached thumbnail for `key`, generating it from `path` on first request.
+fn cached_or_generate(path: &str, key: &str, cache_dir: &Path) -> Result<Thumb, String> {
+    for ext in ["jpg", "png"] {
+        let cached = cache_dir.join(format!("{key}.{ext}"));
+        if let Ok(bytes) = fs::read(&cached) {
+            return Ok(Thumb { bytes, mime: mime_for(&cached) });
+        }
+    }
+    let _permit = Permit::acquire();
+    fs::create_dir_all(cache_dir).map_err(|e| e.to_string())?;
+    let dest = generate(path, cache_dir, key)?;
+    Ok(Thumb { bytes: fs::read(&dest).map_err(|e| e.to_string())?, mime: mime_for(&dest) })
+}
+
 /// Returns the thumbnail for a tracked file id, generating it on first request.
 /// Only files recorded in the database can be served.
 pub fn thumbnail(conn: &Mutex<Connection>, cache_dir: &Path, id: i64) -> Result<Thumb, String> {
@@ -86,18 +100,26 @@ pub fn thumbnail(conn: &Mutex<Connection>, cache_dir: &Path, id: i64) -> Result<
     };
     // Identical files share a thumbnail via their content hash.
     let key = sha.unwrap_or_else(|| format!("f{id}_{mtime}"));
+    cached_or_generate(&path, &key, cache_dir)
+}
 
-    for ext in ["jpg", "png"] {
-        let cached = cache_dir.join(format!("{key}.{ext}"));
-        if let Ok(bytes) = fs::read(&cached) {
-            return Ok(Thumb { bytes, mime: mime_for(&cached) });
-        }
-    }
-
-    let _permit = Permit::acquire();
-    fs::create_dir_all(cache_dir).map_err(|e| e.to_string())?;
-    let dest = generate(&path, cache_dir, &key)?;
-    Ok(Thumb { bytes: fs::read(&dest).map_err(|e| e.to_string())?, mime: mime_for(&dest) })
+/// Thumbnail for an item in quarantine (it is no longer in the files table). The cache is
+/// keyed by content hash, so it usually already exists from before the file was moved.
+pub fn quarantine_thumbnail(
+    conn: &Mutex<Connection>,
+    cache_dir: &Path,
+    id: i64,
+) -> Result<Thumb, String> {
+    let (stored, sha): (String, String) = {
+        let c = conn.lock().map_err(|_| "database lock poisoned".to_string())?;
+        c.query_row("SELECT stored_path, sha256 FROM quarantine WHERE id = ?1", params![id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or("unknown item")?
+    };
+    cached_or_generate(&stored, &sha, cache_dir)
 }
 
 /// The original image for the Compare screen. Formats a webview can't display (TIFF)
@@ -194,5 +216,21 @@ mod tests {
         assert_eq!(f.mime, "image/png");
         assert!(image::load_from_memory(&f.bytes).is_ok());
         assert!(full_image(&conn, 9999).is_err());
+    }
+
+    #[test]
+    fn quarantined_items_get_thumbnails() {
+        let (conn, dir, _) = setup("x.png", |p| image::RgbImage::new(500, 500).save(p).unwrap());
+        let stored = dir.path().join("x.png");
+        conn.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO quarantine (original_path, stored_path, size, sha256) VALUES ('o', ?1, 1, 'qsha')",
+                params![stored.to_str().unwrap()],
+            )
+            .unwrap();
+        let t = quarantine_thumbnail(&conn, &dir.path().join("cache"), 1).unwrap();
+        assert_eq!(image::load_from_memory(&t.bytes).unwrap().width(), 256);
+        assert!(quarantine_thumbnail(&conn, &dir.path().join("cache"), 77).is_err());
     }
 }

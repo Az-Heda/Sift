@@ -1,15 +1,17 @@
-import { useScan } from "../scan/ScanProvider";
 import { formatNumber } from "../format";
+import { useI18n } from "../i18n";
+import { useScan } from "../scan/ScanProvider";
 
 /** Progress / result strip shown while a scan runs and after it ends. */
 export default function ScanBar() {
   const { running, progress, summary, error, cancel, dismiss } = useScan();
+  const { t } = useI18n();
 
   if (error) {
     return (
       <div className="alert" role="alert">
-        <span>Scan failed: {error}</span>
-        <button className="btn ghost" onClick={dismiss} aria-label="Dismiss">✕</button>
+        <span>{t("scan.failed", { error })}</span>
+        <button className="btn ghost" onClick={dismiss} aria-label={t("common.dismiss")}>✕</button>
       </div>
     );
   }
@@ -18,15 +20,18 @@ export default function ScanBar() {
     const hashing = progress?.phase === "hashing" && progress.hash_total > 0;
     const pct = hashing ? Math.round((progress!.hash_done / progress!.hash_total) * 100) : null;
     const label = !progress || progress.phase === "discovering"
-      ? `Discovering files… ${formatNumber(progress?.files_found ?? 0)} found`
+      ? t("scan.discovering", { n: formatNumber(progress?.files_found ?? 0) })
       : progress.phase === "hashing"
-        ? `Hashing ${formatNumber(progress.hash_done)} / ${formatNumber(progress.hash_total)} candidate files`
-        : "Finishing up…";
+        ? t("scan.hashing", {
+            done: formatNumber(progress.hash_done),
+            total: formatNumber(progress.hash_total),
+          })
+        : t("scan.finishing");
     return (
       <div className="card scanbar" role="status">
         <div className="scanbar-row">
           <span>{label}</span>
-          <button className="btn" onClick={() => void cancel()}>Cancel</button>
+          <button className="btn" onClick={() => void cancel()}>{t("common.cancel")}</button>
         </div>
         <div
           className={pct === null ? "bar indeterminate" : "bar"}
@@ -46,12 +51,15 @@ export default function ScanBar() {
       <div className="card scanbar" role="status">
         <div className="scanbar-row">
           <span>
-            {summary.status === "cancelled" ? "Scan cancelled" : "Scan complete"} ·{" "}
-            {formatNumber(summary.files_seen)} files seen · {formatNumber(summary.files_hashed)} hashed ·{" "}
-            {formatNumber(summary.files_cached)} from cache
-            {summary.errors > 0 && ` · ${formatNumber(summary.errors)} skipped (unreadable or changed)`}
+            {summary.status === "cancelled" ? t("scan.cancelled") : t("scan.complete")} ·{" "}
+            {t("scan.summary", {
+              seen: formatNumber(summary.files_seen),
+              hashed: formatNumber(summary.files_hashed),
+              cached: formatNumber(summary.files_cached),
+            })}
+            {summary.errors > 0 && ` · ${t("scan.skipped", { n: formatNumber(summary.errors) })}`}
           </span>
-          <button className="btn ghost" onClick={dismiss} aria-label="Dismiss">✕</button>
+          <button className="btn ghost" onClick={dismiss} aria-label={t("common.dismiss")}>✕</button>
         </div>
       </div>
     );

@@ -6,6 +6,7 @@ import "@fontsource/anonymous-pro/400.css";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { LanguageProvider, loadLangPref } from "./i18n";
 import { ScanProvider } from "./scan/ScanProvider";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { applyTheme, loadTheme } from "./theme/theme";
@@ -14,13 +15,16 @@ async function start() {
   // Load + apply before first render to avoid a theme flash.
   const theme = await loadTheme();
   applyTheme(theme);
+  const language = await loadLangPref();
 
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
       <ThemeProvider initial={theme}>
-        <ScanProvider>
-          <App />
-        </ScanProvider>
+        <LanguageProvider initial={language}>
+          <ScanProvider>
+            <App />
+          </ScanProvider>
+        </LanguageProvider>
       </ThemeProvider>
     </React.StrictMode>,
   );

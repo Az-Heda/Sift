@@ -16,6 +16,8 @@ interface ReviewCtx {
   selected: ReadonlySet<number>;
   toggle: (id: number) => void;
   add: (ids: number[]) => void;
+  /** Replaces the whole selection. */
+  replace: (ids: number[]) => void;
   remove: (ids: number[]) => void;
   clear: () => void;
   /** Selects every copy in `group` except `keepId`. */
@@ -49,6 +51,7 @@ export function ReviewProvider({
   }, [version]);
 
   const add = useCallback((ids: number[]) => setSelected((s) => new Set([...s, ...ids])), []);
+  const replace = useCallback((ids: number[]) => setSelected(new Set(ids)), []);
   const remove = useCallback(
     (ids: number[]) => setSelected((s) => new Set([...s].filter((i) => !ids.includes(i)))),
     [],
@@ -82,10 +85,10 @@ export function ReviewProvider({
 
   const value = useMemo(
     () => ({
-      selected, toggle, add, remove, clear, keepOnly,
+      selected, toggle, add, replace, remove, clear, keepOnly,
       filters, setFilters, resetFilters, compare, openCompare,
     }),
-    [selected, toggle, add, remove, clear, keepOnly, filters, setFilters, resetFilters, compare, openCompare],
+    [selected, toggle, add, replace, remove, clear, keepOnly, filters, setFilters, resetFilters, compare, openCompare],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

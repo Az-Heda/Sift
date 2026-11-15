@@ -117,7 +117,7 @@ impl Config {
     }
 }
 
-fn mtime_ns(md: &fs::Metadata) -> i64 {
+pub(crate) fn mtime_ns(md: &fs::Metadata) -> i64 {
     md.modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
@@ -127,12 +127,12 @@ fn mtime_ns(md: &fs::Metadata) -> i64 {
 
 /// Identifies the physical file so hard links can be recognised (Unix only).
 #[cfg(unix)]
-fn file_id(md: &fs::Metadata) -> Option<String> {
+pub(crate) fn file_id(md: &fs::Metadata) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
     Some(format!("{}:{}", md.dev(), md.ino()))
 }
 #[cfg(not(unix))]
-fn file_id(_md: &fs::Metadata) -> Option<String> {
+pub(crate) fn file_id(_md: &fs::Metadata) -> Option<String> {
     None
 }
 
@@ -481,6 +481,10 @@ pub struct Stats {
     pub bytes: i64,
     pub groups: i64,
     pub wasted: i64,
+    /// Bytes permanently freed by cleanup so far.
+    pub recovered: i64,
+    /// Bytes currently held in quarantine (still on disk until deleted).
+    pub quarantined: i64,
     pub last_scan_at: Option<i64>,
 }
 
@@ -503,6 +507,8 @@ pub fn stats(conn: &Connection) -> Result<Stats, String> {
         bytes,
         groups: groups.len() as i64,
         wasted: groups.iter().map(|g| g.wasted).sum(),
+        recovered: crate::cleanup::recovered(conn)?,
+        quarantined: crate::cleanup::quarantined_bytes(conn)?,
         last_scan_at,
     })
 }

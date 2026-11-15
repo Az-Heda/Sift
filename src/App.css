@@ -325,3 +325,37 @@ input[type="checkbox"] { accent-color: var(--primary); width: 16px; height: 16px
 .insight li { display: flex; justify-content: space-between; gap: var(--s3); font-size: 14px; }
 .insight-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .insight-value { font-family: var(--font-mono); color: var(--primary); white-space: nowrap; }
+
+/* ---------- Cleanup ---------- */
+.notice {
+  padding: var(--s3) var(--s4); border-radius: var(--radius);
+  border: 1px solid var(--success);
+  background: color-mix(in srgb, var(--success) 12%, var(--surface));
+}
+.failures { margin: var(--s2) 0 0; padding-left: var(--s5); font-size: 13px; }
+.failures code { font-family: var(--font-mono); overflow-wrap: anywhere; }
+details.warn summary { cursor: pointer; }
+
+.actionbar {
+  position: sticky; bottom: var(--s4); z-index: 5;
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s4); flex-wrap: wrap;
+  padding: var(--s3) var(--s4);
+  box-shadow: 0 0 calc(24px * var(--glow)) color-mix(in srgb, var(--primary) 40%, transparent);
+}
+.actionbar-buttons { display: flex; gap: var(--s2); }
+
+.q-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.q-item { display: flex; align-items: center; gap: var(--s4); padding: var(--s3) var(--s4); }
+.q-item.selected { border-color: var(--primary); }
+.q-info { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; flex: 1; }
+.q-meta { display: flex; flex-direction: column; align-items: flex-end; gap: var(--s1); font-size: 14px; white-space: nowrap; }
+
+.path-row { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; }
+.mono { font-family: var(--font-mono); font-size: 14px; }
+.btn.icon { display: inline-grid; place-items: center; padding: var(--s2); }
+.q-thumb {
+  flex: none; width: 56px; height: 56px; border-radius: var(--radius); overflow: hidden;
+  border: 1px solid var(--border);
+  background: repeating-conic-gradient(var(--border) 0 25%, transparent 0 50%) 0 0 / 12px 12px;
+}
+.q-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }

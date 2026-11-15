@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { getInsights, getStats, type Insight, type Insights, type Stats } from "../api";
 import ScanBar from "../components/ScanBar";
-import { formatBytes, formatNumber, splitPath } from "../format";
+import { formatBytes, formatDateTime, formatNumber, splitPath } from "../format";
+import { useI18n } from "../i18n";
 import { useScan } from "../scan/ScanProvider";
 import { Empty, Screen } from "./Placeholder";
 
 export default function Dashboard() {
   const { version, running, start } = useScan();
+  const { t } = useI18n();
   const [stats, setStats] = useState<Stats | null>(null);
   const [insights, setInsights] = useState<Insights | null>(null);
 
@@ -16,21 +18,23 @@ export default function Dashboard() {
   }, [version]);
 
   const cards: [string, string][] = [
-    ["Files scanned", stats ? formatNumber(stats.files) : "—"],
-    ["Storage scanned", stats ? formatBytes(stats.bytes) : "—"],
-    ["Duplicate groups", stats ? formatNumber(stats.groups) : "—"],
-    ["Wasted storage", stats ? formatBytes(stats.wasted) : "—"],
+    [t("stat.files"), stats ? formatNumber(stats.files) : "—"],
+    [t("stat.storage"), stats ? formatBytes(stats.bytes) : "—"],
+    [t("stat.groups"), stats ? formatNumber(stats.groups) : "—"],
+    [t("stat.wasted"), stats ? formatBytes(stats.wasted) : "—"],
+    [t("stat.recovered"), stats ? formatBytes(stats.recovered) : "—"],
+    [t("stat.quarantined"), stats ? formatBytes(stats.quarantined) : "—"],
   ];
 
   return (
-    <Screen title="Dashboard" subtitle="Scan statistics and potential space savings.">
+    <Screen title={t("dashboard.title")} subtitle={t("dashboard.subtitle")}>
       <div className="toolbar">
         <button className="btn primary" onClick={() => void start()} disabled={running}>
-          {running ? "Scanning…" : "Scan now"}
+          {running ? t("dashboard.scanning") : t("dashboard.scanNow")}
         </button>
         {stats?.last_scan_at && (
           <span className="muted">
-            Last scan {new Date(stats.last_scan_at * 1000).toLocaleString()}
+            {t("dashboard.lastScan", { date: formatDateTime(stats.last_scan_at) })}
           </span>
         )}
       </div>
@@ -45,18 +49,17 @@ export default function Dashboard() {
       </div>
       {insights && (insights.folders.length > 0 || insights.types.length > 0) && (
         <div className="insight-grid">
-          <InsightList title="Most duplicated folders" items={insights.folders} path />
-          <InsightList title="Most common duplicate types" items={insights.types} />
+          <InsightList title={t("insight.folders")} items={insights.folders} path />
+          <InsightList title={t("insight.types")} items={insights.types} />
         </div>
       )}
-      {stats && stats.files === 0 && (
-        <Empty text="Add a folder and run a scan to see your results here." />
-      )}
+      {stats && stats.files === 0 && <Empty text={t("dashboard.empty")} />}
     </Screen>
   );
 }
 
 function InsightList({ title, items, path }: { title: string; items: Insight[]; path?: boolean }) {
+  const { t } = useI18n();
   return (
     <div className="card insight">
       <h2>{title}</h2>
@@ -68,7 +71,7 @@ function InsightList({ title, items, path }: { title: string; items: Insight[]; 
               {path && <span className="muted"> {splitPath(i.label)[0]}</span>}
             </span>
             <span className="insight-value">
-              {formatNumber(i.count)} files · {formatBytes(i.wasted)}
+              {t("count.files", { n: i.count })} · {formatBytes(i.wasted)}
             </span>
           </li>
         ))}

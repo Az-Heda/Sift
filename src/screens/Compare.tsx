@@ -7,6 +7,7 @@ import {
   type DupGroup,
 } from "../api";
 import { formatBytes, formatDate, splitPath } from "../format";
+import { useI18n } from "../i18n";
 import { useReview } from "../review/ReviewProvider";
 import { Empty, Screen } from "./Placeholder";
 
@@ -31,6 +32,7 @@ function Pane({
   onKeep: () => void;
   onError: (m: string) => void;
 }) {
+  const { t } = useI18n();
   const { selected, toggle } = useReview();
   const [failed, setFailed] = useState(false);
   const [folder, name] = splitPath(file.path);
@@ -42,7 +44,7 @@ function Pane({
   return (
     <section className={file.id === group.keep_id ? "pane recommended" : "pane"}>
       <label className="inline">
-        <span className="field-label">Copy</span>
+        <span className="field-label">{t("compare.copy")}</span>
         <select className="input grow" value={file.id} onChange={(e) => onPick(Number(e.target.value))}>
           {files.map((f) => (
             <option key={f.id} value={f.id} disabled={f.id === other.id}>
@@ -54,36 +56,37 @@ function Pane({
 
       <div className={zoom ? "viewer zoomed" : "viewer"}>
         {failed ? (
-          <span className="thumb-fallback">Can't display this image</span>
+          <span className="thumb-fallback">{t("compare.cantDisplay")}</span>
         ) : (
           <img src={fullUrl(file.id)} alt={name} decoding="async" onError={() => setFailed(true)} />
         )}
-        {file.id === group.keep_id && <span className="keep-badge">Recommended</span>}
+        {file.id === group.keep_id && <span className="keep-badge">{t("common.recommended")}</span>}
       </div>
 
       <dl className="copy-meta">
-        <dt>Name</dt><dd title={name}>{name}</dd>
-        <dt>Location</dt><dd title={folder}>{folder}</dd>
-        <dt>Resolution</dt><dd>{hasDims ? `${file.width} × ${file.height}` : "Unknown"}</dd>
-        <dt>Size</dt><dd>{formatBytes(group.size)}</dd>
-        <dt>Modified</dt><dd>{formatDate(file.modified)}</dd>
-        <dt>Created</dt><dd>{file.created ? formatDate(file.created) : "Unknown"}</dd>
+        <dt>{t("compare.name")}</dt><dd title={name}>{name}</dd>
+        <dt>{t("compare.location")}</dt><dd title={folder}>{folder}</dd>
+        <dt>{t("common.resolution")}</dt><dd>{hasDims ? `${file.width} × ${file.height}` : t("common.unknown")}</dd>
+        <dt>{t("common.size")}</dt><dd>{formatBytes(group.size)}</dd>
+        <dt>{t("common.modified")}</dt><dd>{formatDate(file.modified)}</dd>
+        <dt>{t("common.created")}</dt><dd>{file.created ? formatDate(file.created) : t("common.unknown")}</dd>
       </dl>
 
       <div className="copy-actions">
-        <button className="btn small primary" onClick={onKeep}>Keep this one</button>
+        <button className="btn small primary" onClick={onKeep}>{t("compare.keepThis")}</button>
         <label className="inline check">
           <input type="checkbox" checked={selected.has(file.id)} onChange={() => toggle(file.id)} />
-          <span>Select for cleanup</span>
+          <span>{t("compare.selectForCleanup")}</span>
         </label>
-        <button className="btn small" onClick={() => run(revealFile)}>Reveal</button>
-        <button className="btn small" onClick={() => run(openContainingFolder)}>Open folder</button>
+        <button className="btn small" onClick={() => run(revealFile)}>{t("common.reveal")}</button>
+        <button className="btn small" onClick={() => run(openContainingFolder)}>{t("common.openFolder")}</button>
       </div>
     </section>
   );
 }
 
 export default function Compare() {
+  const { t } = useI18n();
   const { compare: group, keepOnly } = useReview();
   const [leftId, setLeftId] = useState(0);
   const [rightId, setRightId] = useState(0);
@@ -100,8 +103,8 @@ export default function Compare() {
 
   if (!group) {
     return (
-      <Screen title="Compare" subtitle="Inspect copies and choose which to keep.">
-        <Empty text="Open the Duplicates screen and press Compare on a group." />
+      <Screen title={t("compare.title")} subtitle={t("compare.subtitleEmpty")}>
+        <Empty text={t("compare.empty")} />
       </Screen>
     );
   }
@@ -112,8 +115,8 @@ export default function Compare() {
 
   return (
     <Screen
-      title="Compare"
-      subtitle={`${group.files.length} identical copies · ${formatBytes(group.size)} each`}
+      title={t("compare.title")}
+      subtitle={t("compare.subtitle", { n: group.files.length, size: formatBytes(group.size) })}
     >
       {error && <div className="alert" role="alert">{error}</div>}
       <div className="toolbar">
@@ -124,12 +127,12 @@ export default function Compare() {
             setRightId(leftId);
           }}
         >
-          Swap sides
+          {t("compare.swap")}
         </button>
         <button className="btn" aria-pressed={zoom} onClick={() => setZoom((z) => !z)}>
-          {zoom ? "Fit to pane" : "Actual size"}
+          {zoom ? t("compare.fit") : t("compare.actual")}
         </button>
-        <span className="muted">Copies are byte-identical, so only their location and dates differ.</span>
+        <span className="muted">{t("compare.hint")}</span>
       </div>
       <div className="compare">
         <Pane group={group} file={left} other={right} files={group.files} zoom={zoom}

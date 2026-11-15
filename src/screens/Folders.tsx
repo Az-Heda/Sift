@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { addFolder, listFolders, pickFolder, removeFolder, type Folder } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog";
 import ScanBar from "../components/ScanBar";
-import { formatNumber } from "../format";
+import { formatDateTime } from "../format";
+import { useI18n } from "../i18n";
 import { useScan } from "../scan/ScanProvider";
 import { Empty, Screen } from "./Placeholder";
 
@@ -14,6 +15,7 @@ export default function Folders() {
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<Folder | null>(null);
   const { running, start, version } = useScan();
+  const { t } = useI18n();
 
   const refresh = useCallback(async () => {
     try {
@@ -56,19 +58,19 @@ export default function Folders() {
   }
 
   return (
-    <Screen title="Folders" subtitle="Add or remove folders and see their scan status.">
+    <Screen title={t("folders.title")} subtitle={t("folders.subtitle")}>
       <div className="toolbar">
         <button className="btn primary" onClick={onAdd} disabled={busy}>
-          + Add folder
+          {t("folders.add")}
         </button>
         <button
           className="btn"
           onClick={() => void start()}
           disabled={running || !folders?.some((f) => f.exists)}
         >
-          {running ? "Scanning…" : "Scan all"}
+          {running ? t("dashboard.scanning") : t("folders.scanAll")}
         </button>
-        <span className="muted">Removing a folder never deletes any files.</span>
+        <span className="muted">{t("folders.note")}</span>
       </div>
 
       <ScanBar />
@@ -76,14 +78,14 @@ export default function Folders() {
       {error && (
         <div className="alert" role="alert">
           <span>{error}</span>
-          <button className="btn ghost" onClick={() => setError(null)} aria-label="Dismiss">
+          <button className="btn ghost" onClick={() => setError(null)} aria-label={t("common.dismiss")}>
             ✕
           </button>
         </div>
       )}
 
       {folders === null ? null : folders.length === 0 ? (
-        <Empty text="No folders added yet. Add one to start finding duplicates." />
+        <Empty text={t("folders.empty")} />
       ) : (
         <ul className="folder-list">
           {folders.map((f) => (
@@ -92,19 +94,16 @@ export default function Folders() {
                 <span className="folder-path" title={f.path}>{f.path}</span>
                 <span className="folder-meta">
                   {!f.exists ? (
-                    <span className="badge danger">Missing</span>
+                    <span className="badge danger">{t("folders.missing")}</span>
                   ) : f.last_scanned_at ? (
-                    <>
-                      {formatNumber(f.file_count)} images · scanned{" "}
-                      {new Date(f.last_scanned_at * 1000).toLocaleString()}
-                    </>
+                    t("folders.scanned", { n: f.file_count, date: formatDateTime(f.last_scanned_at) })
                   ) : (
-                    <span className="badge">Not scanned</span>
+                    <span className="badge">{t("folders.notScanned")}</span>
                   )}
                 </span>
               </div>
-              <button className="btn" onClick={() => setPending(f)} aria-label={`Remove ${f.path}`}>
-                Remove
+              <button className="btn" onClick={() => setPending(f)} aria-label={t("folders.removeAria", { path: f.path })}>
+                {t("common.remove")}
               </button>
             </li>
           ))}
@@ -113,16 +112,13 @@ export default function Folders() {
 
       <ConfirmDialog
         open={pending !== null}
-        title="Remove folder?"
-        confirmLabel="Remove"
+        title={t("folders.removeTitle")}
+        confirmLabel={t("common.remove")}
         onConfirm={() => pending && void onRemove(pending)}
         onCancel={() => setPending(null)}
       >
         <p className="folder-path">{pending?.path}</p>
-        <p className="muted">
-          Sift will stop tracking this folder and forget its scan results. Your files
-          are not deleted.
-        </p>
+        <p className="muted">{t("folders.removeBody")}</p>
       </ConfirmDialog>
     </Screen>
   );

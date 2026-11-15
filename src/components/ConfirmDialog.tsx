@@ -1,3 +1,4 @@
+import { useI18n } from "../i18n";
 import { useEffect, useRef, type ReactNode } from "react";
 
 export default function ConfirmDialog({
@@ -5,6 +6,7 @@ export default function ConfirmDialog({
   title,
   children,
   confirmLabel,
+  tone = "danger",
   onConfirm,
   onCancel,
 }: {
@@ -12,9 +14,12 @@ export default function ConfirmDialog({
   title: string;
   children: ReactNode;
   confirmLabel: string;
+  /** "danger" for destructive actions, "primary" for reversible ones. */
+  tone?: "danger" | "primary";
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useI18n();
   const ref = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -41,9 +46,9 @@ export default function ConfirmDialog({
       <div className="dialog-body">{children}</div>
       <div className="dialog-actions">
         <button className="btn" autoFocus onClick={onCancel}>
-          Cancel
+          {t("common.cancel")}
         </button>
-        <button className="btn danger" onClick={onConfirm}>
+        <button className={`btn ${tone}`} onClick={onConfirm}>
           {confirmLabel}
         </button>
       </div>

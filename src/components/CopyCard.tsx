@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { thumbUrl, type DupFile } from "../api";
+import { useI18n } from "../i18n";
 import { formatBytes, formatDate, splitPath } from "../format";
 
 export default function CopyCard({
@@ -19,6 +20,7 @@ export default function CopyCard({
   onReveal: () => void;
   onOpenFolder: () => void;
 }) {
+  const { t } = useI18n();
   const [failed, setFailed] = useState(false);
   const [folder, name] = splitPath(file.path);
   const hasDims = !!file.width && !!file.height;
@@ -28,7 +30,7 @@ export default function CopyCard({
     <article className={cls}>
       <div className="thumb">
         {failed ? (
-          <span className="thumb-fallback">No preview</span>
+          <span className="thumb-fallback">{t("card.noPreview")}</span>
         ) : (
           <img
             src={thumbUrl(file.id)}
@@ -38,13 +40,13 @@ export default function CopyCard({
             onError={() => setFailed(true)}
           />
         )}
-        {recommended && <span className="keep-badge">Recommended</span>}
-        <label className="pick" title="Select for cleanup">
+        {recommended && <span className="keep-badge">{t("common.recommended")}</span>}
+        <label className="pick" title={t("card.select")}>
           <input
             type="checkbox"
             checked={selected}
             onChange={onToggle}
-            aria-label={`Select ${name}`}
+            aria-label={t("card.selectAria", { name })}
           />
         </label>
       </div>
@@ -52,21 +54,21 @@ export default function CopyCard({
         <span className="copy-name" title={name}>{name}</span>
         <span className="copy-folder" title={folder}>{folder}</span>
         <dl className="copy-meta">
-          <dt>Resolution</dt>
-          <dd>{hasDims ? `${file.width} × ${file.height}` : "Unknown"}</dd>
-          <dt>Size</dt>
+          <dt>{t("common.resolution")}</dt>
+          <dd>{hasDims ? `${file.width} × ${file.height}` : t("common.unknown")}</dd>
+          <dt>{t("common.size")}</dt>
           <dd>{formatBytes(size)}</dd>
-          <dt>Modified</dt>
+          <dt>{t("common.modified")}</dt>
           <dd>{formatDate(file.modified)}</dd>
-          <dt>Created</dt>
-          <dd>{file.created ? formatDate(file.created) : "Unknown"}</dd>
+          <dt>{t("common.created")}</dt>
+          <dd>{file.created ? formatDate(file.created) : t("common.unknown")}</dd>
         </dl>
         <div className="copy-actions">
-          <button className="btn small" onClick={onReveal} title="Show this file in your file manager">
-            Reveal
+          <button className="btn small" onClick={onReveal} title={t("card.revealTitle")}>
+            {t("common.reveal")}
           </button>
-          <button className="btn small" onClick={onOpenFolder} title="Open the containing folder">
-            Open folder
+          <button className="btn small" onClick={onOpenFolder} title={t("card.openFolderTitle")}>
+            {t("common.openFolder")}
           </button>
         </div>
       </div>

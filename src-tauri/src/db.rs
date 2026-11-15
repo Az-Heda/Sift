@@ -41,6 +41,17 @@ const MIGRATIONS: &[&str] = &[
     // Image dimensions, filled lazily when duplicates are listed (0x0 = unreadable).
     "ALTER TABLE files ADD COLUMN width INTEGER;
     ALTER TABLE files ADD COLUMN height INTEGER;",
+    // Files moved out of scanned folders by cleanup, kept until restored or deleted.
+    "CREATE TABLE quarantine (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        original_path  TEXT NOT NULL,
+        stored_path    TEXT NOT NULL,
+        size           INTEGER NOT NULL,
+        sha256         TEXT NOT NULL,
+        width          INTEGER,
+        height         INTEGER,
+        moved_at       INTEGER NOT NULL DEFAULT (unixepoch())
+    );",
 ];
 
 #[derive(Debug, Serialize, PartialEq)]

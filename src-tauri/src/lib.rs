@@ -1,3 +1,4 @@
+mod cleanup;
 mod db;
 mod review;
 mod scan;
@@ -68,7 +69,9 @@ fn start_scan(app: AppHandle, state: State<'_, ScanState>, path: State<'_, DbPat
         let _guard = ClearOnDrop(app.clone());
         let result = (|| {
             let mut conn = db::open(&db_path)?;
-            let config = scan::Config::load(&conn)?;
+            let mut config = scan::Config::load(&conn)?;
+            // Never scan quarantined files, wherever the user put the folder.
+            config.excluded_paths.push(cleanup::dir(&conn, &default_quarantine_dir(&app)?)?);
             let scan_id = scan::begin_scan(&conn)?;
             let mut last_emit = Instant::now() - Duration::from_secs(1);
             let handle = app.clone();
@@ -126,6 +129,82 @@ async fn list_duplicates(db: State<'_, Db>) -> Result<Vec<scan::DupGroup>, Strin
 #[tauri::command]
 async fn get_stats(db: State<'_, Db>) -> Result<scan::Stats, String> {
     db.with(scan::stats)
+}
+
+/// Cleanup rewrites the files table and moves files the scanner is reading, so it waits.
+fn ensure_idle(state: &ScanState) -> Result<(), String> {
+    let busy = state.0.lock().map_err(|_| "scan state poisoned".to_string())?.is_some();
+    if busy { Err("Wait for the running scan to finish first".into()) } else { Ok(()) }
+}
+
+fn default_quarantine_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("quarantine"))
+}
+
+#[derive(Serialize)]
+struct QuarantineDir {
+    path: PathBuf,
+    default: PathBuf,
+}
+
+#[tauri::command]
+async fn get_quarantine_dir(app: AppHandle, db: State<'_, Db>) -> Result<QuarantineDir, String> {
+    let default = default_quarantine_dir(&app)?;
+    db.with(|c| Ok(QuarantineDir { path: cleanup::dir(c, &default)?, default: default.clone() }))
+}
+
+/// An empty path restores the default location.
+#[tauri::command]
+async fn set_quarantine_dir(app: AppHandle, db: State<'_, Db>, path: String) -> Result<QuarantineDir, String> {
+    let default = default_quarantine_dir(&app)?;
+    db.with(|c| Ok(QuarantineDir { path: cleanup::set_dir(c, &default, &path)?, default: default.clone() }))
+}
+
+#[tauri::command]
+async fn quarantine_files(
+    app: AppHandle,
+    db: State<'_, Db>,
+    scan: State<'_, ScanState>,
+    ids: Vec<i64>,
+) -> Result<cleanup::CleanupResult, String> {
+    ensure_idle(&scan)?;
+    let default = default_quarantine_dir(&app)?;
+    db.with(|c| cleanup::quarantine(c, &cleanup::dir(c, &default)?, &ids))
+}
+
+#[tauri::command]
+async fn delete_files(
+    db: State<'_, Db>,
+    scan: State<'_, ScanState>,
+    ids: Vec<i64>,
+) -> Result<cleanup::CleanupResult, String> {
+    ensure_idle(&scan)?;
+    db.with(|c| cleanup::delete_files(c, &ids))
+}
+
+#[tauri::command]
+async fn list_quarantine(db: State<'_, Db>) -> Result<Vec<cleanup::QuarantineItem>, String> {
+    db.with(cleanup::list_quarantine)
+}
+
+#[tauri::command]
+async fn restore_quarantined(
+    db: State<'_, Db>,
+    scan: State<'_, ScanState>,
+    ids: Vec<i64>,
+) -> Result<cleanup::CleanupResult, String> {
+    ensure_idle(&scan)?;
+    db.with(|c| cleanup::restore(c, &ids))
+}
+
+#[tauri::command]
+async fn delete_quarantined(
+    db: State<'_, Db>,
+    scan: State<'_, ScanState>,
+    ids: Vec<i64>,
+) -> Result<cleanup::CleanupResult, String> {
+    ensure_idle(&scan)?;
+    db.with(|c| cleanup::delete_quarantined(c, &ids))
 }
 
 #[tauri::command]
@@ -187,22 +266,30 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("thumb", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
-            // `/<id>` is a thumbnail, `/full-<id>` the original image. (No slash in the
-            // second form: the frontend percent-encodes the path it hands to the scheme.)
+            // `/<id>` thumbnail, `/full-<id>` original image, `/q-<id>` thumbnail of a quarantined
+            // item. No slashes inside: the frontend percent-encodes the path it gives the scheme.
             let path = request.uri().path().trim_start_matches('/').to_owned();
-            let (id_part, full) = match path.strip_prefix("full-") {
-                Some(p) => (p.to_owned(), true),
-                None => (path, false),
+            #[derive(Clone, Copy)]
+            enum Kind { Thumb, Full, Quarantined }
+            let (kind, id) = if let Some(p) = path.strip_prefix("full-") {
+                (Kind::Full, p.parse::<i64>())
+            } else if let Some(p) = path.strip_prefix("q-") {
+                (Kind::Quarantined, p.parse::<i64>())
+            } else {
+                (Kind::Thumb, path.parse::<i64>())
             };
-            let id = id_part.parse::<i64>();
             // Decoding is CPU/IO heavy: keep it off the main thread.
             tauri::async_runtime::spawn_blocking(move || {
                 let result = id.map_err(|e| e.to_string()).and_then(|id| {
-                    if full {
-                        return thumbs::full_image(&app.state::<Db>().0, id);
+                    let db = &app.state::<Db>().0;
+                    if let Kind::Full = kind {
+                        return thumbs::full_image(db, id);
                     }
                     let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("thumbs");
-                    thumbs::thumbnail(&app.state::<Db>().0, &cache, id)
+                    match kind {
+                        Kind::Quarantined => thumbs::quarantine_thumbnail(db, &cache, id),
+                        _ => thumbs::thumbnail(db, &cache, id),
+                    }
                 });
                 let response = match result {
                     Ok(t) => tauri::http::Response::builder()
@@ -238,6 +325,13 @@ pub fn run() {
             list_duplicates,
             get_stats,
             get_insights,
+            quarantine_files,
+            delete_files,
+            list_quarantine,
+            restore_quarantined,
+            delete_quarantined,
+            get_quarantine_dir,
+            set_quarantine_dir,
             reveal_file,
             open_containing_folder
         ])

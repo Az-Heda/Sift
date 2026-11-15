@@ -1,16 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  deleteFiles,
   listDuplicates,
   listFolders,
   openContainingFolder,
+  quarantineFiles,
   revealFile,
+  type CleanupResult,
   type DupGroup,
   type Folder,
 } from "../api";
+import ConfirmDialog from "../components/ConfirmDialog";
 import CopyCard from "../components/CopyCard";
 import FilterBar from "../components/FilterBar";
 import { formatBytes } from "../format";
+import { useI18n } from "../i18n";
 import { applyFilters, isFiltered } from "../review/filters";
+import { applyRule, RULES, type KeepRule } from "../review/rules";
 import { useReview } from "../review/ReviewProvider";
 import { useScan } from "../scan/ScanProvider";
 import { Empty, Screen } from "./Placeholder";
@@ -19,13 +25,21 @@ const PAGE = 25;
 const errMsg = (e: unknown) => (typeof e === "string" ? e : (e as Error)?.message ?? "Unknown error");
 
 export default function Duplicates() {
-  const { version } = useScan();
+  const { version, invalidate, running } = useScan();
+  const { t } = useI18n();
   const review = useReview();
   const { selected, filters } = review;
   const [groups, setGroups] = useState<DupGroup[] | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [shown, setShown] = useState(PAGE);
+  const [rule, setRule] = useState<KeepRule>("recommended");
+  const [master, setMaster] = useState("");
+  const [ruleNote, setRuleNote] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<"quarantine" | "delete" | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [failures, setFailures] = useState<CleanupResult["failed"]>([]);
 
   useEffect(() => {
     listDuplicates()
@@ -55,15 +69,53 @@ export default function Duplicates() {
   const act = (fn: (id: number) => Promise<void>) => (id: number) =>
     fn(id).then(() => setError(null), (e) => setError(errMsg(e)));
 
-  function selectAllButRecommended() {
-    review.add(visible.flatMap((g) => g.files.filter((f) => f.id !== g.keep_id).map((f) => f.id)));
+  // Groups where every copy is selected: cleanup is blocked until one is deselected.
+  const emptied = useMemo(
+    () => (groups ?? []).filter((g) => g.files.every((f) => selected.has(f.id))).length,
+    [groups, selected],
+  );
+
+  function selectByRule() {
+    const { ids, skipped } = applyRule(visible, rule, master);
+    review.replace(ids);
+    setRuleNote(skipped > 0 ? t("dup.skipped", { n: skipped }) : null);
   }
 
+  async function runCleanup(kind: "quarantine" | "delete") {
+    setConfirm(null);
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await (kind === "quarantine" ? quarantineFiles : deleteFiles)([...selected]);
+      setFailures(r.failed);
+      setNotice(t(kind === "quarantine" ? "dup.moved" : "dup.deleted", { n: r.done, size: formatBytes(r.bytes) }));
+      invalidate(); // refetches the list and clears the selection
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const cleanupBlocked = busy || running || selected.size === 0 || emptied > 0;
+
   return (
-    <Screen title="Duplicates" subtitle="Groups of byte-identical files, largest savings first.">
+    <Screen title={t("dup.title")} subtitle={t("dup.subtitle")}>
       {error && <div className="alert" role="alert">{error}</div>}
+      {notice && <div className="notice" role="status">{notice}</div>}
+      {failures.length > 0 && (
+        <details className="warn">
+          <summary>{t("common.failed", { n: failures.length })}</summary>
+          <ul className="failures">
+            {failures.map((f, i) => (
+              <li key={i}><code>{f.path}</code>: {f.reason}</li>
+            ))}
+          </ul>
+        </details>
+      )}
       {groups === null ? null : groups.length === 0 ? (
-        <Empty text="No duplicates found. Run a scan from the Dashboard or Folders screen." />
+        <Empty text={t("dup.empty")} />
       ) : (
         <>
           <FilterBar
@@ -73,21 +125,47 @@ export default function Duplicates() {
             onReset={review.resetFilters}
           />
           <div className="toolbar">
-            <button className="btn" onClick={selectAllButRecommended} disabled={visible.length === 0}>
-              Select all except recommended
+            <label className="inline">
+              <span className="field-label">{t("dup.keep")}</span>
+              <select className="input" value={rule} onChange={(e) => setRule(e.target.value as KeepRule)}>
+                {RULES.map((r) => (
+                  <option key={r.id} value={r.id}>{t(r.label)}</option>
+                ))}
+              </select>
+            </label>
+            {rule === "master" && (
+              <select
+                className="input"
+                aria-label={t("dup.masterAria")}
+                value={master}
+                onChange={(e) => setMaster(e.target.value)}
+              >
+                <option value="">{t("dup.chooseMaster")}</option>
+                {folders.map((f) => (
+                  <option key={f.id} value={f.path}>{f.path}</option>
+                ))}
+              </select>
+            )}
+            <button
+              className="btn"
+              onClick={selectByRule}
+              disabled={visible.length === 0 || (rule === "master" && !master)}
+            >
+              {t("dup.selectOthers")}
             </button>
             <button className="btn" onClick={review.clear} disabled={selected.size === 0}>
-              Clear selection
+              {t("common.clearSelection")}
             </button>
             <span className="muted" aria-live="polite">
               {selected.size > 0
-                ? `${selected.size} selected · ${formatBytes(selectedBytes)}`
-                : `${visible.length} of ${groups.length} groups`}
+                ? t("common.selectedInfo", { n: selected.size, size: formatBytes(selectedBytes) })
+                : t("dup.groupsOf", { shown: visible.length, total: groups.length })}
             </span>
           </div>
+          {ruleNote && <div className="muted">{ruleNote}</div>}
 
           {visible.length === 0 ? (
-            <Empty text={isFiltered(filters) ? "No groups match these filters." : "Nothing to show."} />
+            <Empty text={isFiltered(filters) ? t("dup.noMatch") : t("dup.nothing")} />
           ) : (
             <ul className="group-list">
               {visible.slice(0, shown).map((g) => {
@@ -95,14 +173,14 @@ export default function Duplicates() {
                 return (
                   <li className="card group" key={g.sha256}>
                     <div className="group-head">
-                      <strong>{g.files.length} copies</strong>
+                      <strong>{t("count.copies", { n: g.files.length })}</strong>
                       <span className="muted">
-                        {formatBytes(g.size)} each · {formatBytes(g.wasted)} recoverable
+                        {t("dup.recoverable", { size: formatBytes(g.size), wasted: formatBytes(g.wasted) })}
                       </span>
                     </div>
                     {allSelected && (
                       <div className="warn" role="status">
-                        Every copy in this group is selected: nothing would be kept.
+                        {t("dup.allSelected")}
                       </div>
                     )}
                     <div className="copies">
@@ -121,10 +199,10 @@ export default function Duplicates() {
                     </div>
                     <div className="group-actions">
                       <button className="btn small" onClick={() => review.keepOnly(g, g.keep_id)}>
-                        Keep recommended
+                        {t("dup.keepRecommended")}
                       </button>
                       <button className="btn small primary" onClick={() => review.openCompare(g)}>
-                        Compare
+                        {t("dup.compare")}
                       </button>
                     </div>
                   </li>
@@ -135,12 +213,49 @@ export default function Duplicates() {
           {shown < visible.length && (
             <div className="toolbar">
               <button className="btn" onClick={() => setShown((n) => n + PAGE)}>
-                Show more ({visible.length - shown} remaining)
+                {t("dup.showMore", { n: visible.length - shown })}
               </button>
+            </div>
+          )}
+
+          {selected.size > 0 && (
+            <div className="card actionbar" role="region" aria-label={t("dup.cleanupRegion")}>
+              <span>
+                {emptied > 0 ? t("dup.blocked", { n: emptied }) : t("dup.nothingChanged")}
+              </span>
+              <div className="actionbar-buttons">
+                <button className="btn primary" disabled={cleanupBlocked} onClick={() => setConfirm("quarantine")}>
+                  {t("dup.moveToQuarantine")}
+                </button>
+                <button className="btn danger" disabled={cleanupBlocked} onClick={() => setConfirm("delete")}>
+                  {t("dup.deletePermanently")}
+                </button>
+              </div>
             </div>
           )}
         </>
       )}
+      <ConfirmDialog
+        open={confirm === "quarantine"}
+        title={t("dup.q.title")}
+        tone="primary"
+        confirmLabel={t("dup.q.confirm", { n: selected.size })}
+        onCancel={() => setConfirm(null)}
+        onConfirm={() => void runCleanup("quarantine")}
+      >
+        <p>{t("dup.q.body", { n: selected.size, size: formatBytes(selectedBytes) })}</p>
+        <p>{t("dup.q.hint")}</p>
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={confirm === "delete"}
+        title={t("dup.d.title")}
+        confirmLabel={t("dup.d.confirm", { n: selected.size })}
+        onCancel={() => setConfirm(null)}
+        onConfirm={() => void runCleanup("delete")}
+      >
+        <p>{t("dup.d.body", { n: selected.size, size: formatBytes(selectedBytes) })}</p>
+        <p><strong>{t("dup.d.warn")}</strong> {t("dup.d.hint")}</p>
+      </ConfirmDialog>
     </Screen>
   );
 }

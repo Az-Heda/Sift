@@ -70,6 +70,10 @@ export interface Stats {
   bytes: number;
   groups: number;
   wasted: number;
+  /** Bytes permanently freed by cleanup. */
+  recovered: number;
+  /** Bytes currently held in quarantine. */
+  quarantined: number;
   last_scan_at: number | null;
 }
 
@@ -112,3 +116,39 @@ export async function getList(key: string): Promise<string[] | null> {
   }
 }
 export const setList = (key: string, list: string[]) => setSetting(key, JSON.stringify(list));
+
+// ---------- Cleanup ----------
+export interface CleanupResult {
+  done: number;
+  bytes: number;
+  failed: { path: string; reason: string }[];
+}
+
+export interface QuarantineItem {
+  id: number;
+  original_path: string;
+  size: number;
+  moved_at: number;
+  width: number | null;
+  height: number | null;
+  exists: boolean;
+}
+
+export const quarantineFiles = (ids: number[]) => invoke<CleanupResult>("quarantine_files", { ids });
+export const deleteFiles = (ids: number[]) => invoke<CleanupResult>("delete_files", { ids });
+export const listQuarantine = () => invoke<QuarantineItem[]>("list_quarantine");
+export const restoreQuarantined = (ids: number[]) =>
+  invoke<CleanupResult>("restore_quarantined", { ids });
+export const deleteQuarantined = (ids: number[]) =>
+  invoke<CleanupResult>("delete_quarantined", { ids });
+
+export interface QuarantineDir {
+  path: string;
+  default: string;
+}
+export const getQuarantineDir = () => invoke<QuarantineDir>("get_quarantine_dir");
+/** An empty path restores the default location. */
+export const setQuarantineDir = (path: string) => invoke<QuarantineDir>("set_quarantine_dir", { path });
+
+/** Thumbnail of an item in quarantine. */
+export const quarantineThumbUrl = (itemId: number) => convertFileSrc(`q-${itemId}`, "thumb");

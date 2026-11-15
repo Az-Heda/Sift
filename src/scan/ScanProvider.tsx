@@ -24,6 +24,8 @@ interface ScanCtx {
   error: string | null;
   /** Bumps whenever a scan ends, so screens know to refetch. */
   version: number;
+  /** Tells screens to refetch after something other than a scan changed the data. */
+  invalidate: () => void;
   start: () => Promise<void>;
   cancel: () => Promise<void>;
   dismiss: () => void;
@@ -102,9 +104,11 @@ export function ScanProvider({ children }: { children: ReactNode }) {
     setSummary(null);
   }, []);
 
+  const invalidate = useCallback(() => setVersion((v) => v + 1), []);
+
   const value = useMemo<ScanCtx>(
-    () => ({ running, progress, summary, error, version, start, cancel, dismiss }),
-    [running, progress, summary, error, version, start, cancel, dismiss],
+    () => ({ running, progress, summary, error, version, invalidate, start, cancel, dismiss }),
+    [running, progress, summary, error, version, invalidate, start, cancel, dismiss],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
