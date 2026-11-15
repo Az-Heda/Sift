@@ -3,13 +3,13 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 import {
   applyTheme,
   DEFAULT_THEME,
-  loadTheme,
   saveTheme,
   type ThemeSettings,
 } from "./theme";
@@ -22,12 +22,28 @@ interface ThemeCtx {
 
 const Ctx = createContext<ThemeCtx | null>(null);
 
-export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState<ThemeSettings>(loadTheme);
+export function ThemeProvider({
+  initial,
+  children,
+}: {
+  initial: ThemeSettings;
+  children: ReactNode;
+}) {
+  const [theme, setTheme] = useState<ThemeSettings>(initial);
 
   useEffect(() => {
     applyTheme(theme);
-    saveTheme(theme);
+  }, [theme]);
+
+  // Persist to the database, debounced so dragging a slider doesn't spam writes.
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    const t = setTimeout(() => void saveTheme(theme), 300);
+    return () => clearTimeout(t);
   }, [theme]);
 
   // Follow OS changes while in "system" mode.

@@ -1,3 +1,5 @@
+import { getSetting, setSetting } from "../api";
+
 export type ThemeMode = "system" | "light" | "dark";
 
 export interface ThemeSettings {
@@ -25,13 +27,13 @@ export const PRESETS: { name: string; primary: string; secondary: string }[] = [
   { name: "Matrix", primary: "#16a34a", secondary: "#06b6d4" },
 ];
 
-const STORAGE_KEY = "sift.theme";
+const SETTING_KEY = "theme";
+const LEGACY_STORAGE_KEY = "sift.theme";
 const HEX = /^#[0-9a-f]{6}$/i;
 
-export function loadTheme(): ThemeSettings {
+function parseTheme(raw: string | null): ThemeSettings | null {
+  if (!raw) return null;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_THEME;
     const p = JSON.parse(raw) as Partial<ThemeSettings>;
     return {
       mode: p.mode === "light" || p.mode === "dark" ? p.mode : "system",
@@ -41,15 +43,34 @@ export function loadTheme(): ThemeSettings {
       radius: clamp(p.radius, 0, 24, DEFAULT_THEME.radius),
     };
   } catch {
-    return DEFAULT_THEME;
+    return null;
   }
 }
 
-export function saveTheme(t: ThemeSettings) {
+/** Loads the theme from the database. Imports a pre-database localStorage theme once. */
+export async function loadTheme(): Promise<ThemeSettings> {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(t));
-  } catch {
-    /* storage unavailable: theme just won't persist */
+    const stored = parseTheme(await getSetting(SETTING_KEY));
+    if (stored) return stored;
+
+    const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    const legacy = parseTheme(legacyRaw);
+    if (legacy) {
+      await saveTheme(legacy);
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+      return legacy;
+    }
+  } catch (e) {
+    console.error("Failed to load theme", e);
+  }
+  return DEFAULT_THEME;
+}
+
+export async function saveTheme(t: ThemeSettings): Promise<void> {
+  try {
+    await setSetting(SETTING_KEY, JSON.stringify(t));
+  } catch (e) {
+    console.error("Failed to save theme", e);
   }
 }
 

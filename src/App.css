@@ -167,3 +167,48 @@ input[type="range"] { accent-color: var(--primary); max-width: 320px; }
 .btn { padding: var(--s2) var(--s4); border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface-2); }
 .btn:hover { border-color: var(--primary); }
 .btn.ghost { align-self: flex-start; }
+
+/* ---------- Folders ---------- */
+.muted { color: var(--muted); font-size: 14px; }
+.toolbar { display: flex; align-items: center; gap: var(--s4); flex-wrap: wrap; }
+
+.btn.primary {
+  background: var(--primary); color: var(--on-primary); border-color: transparent;
+  box-shadow: 0 0 calc(16px * var(--glow)) color-mix(in srgb, var(--primary) 60%, transparent);
+}
+.btn.primary:hover { filter: brightness(1.1); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.alert {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s4);
+  padding: var(--s3) var(--s4); border-radius: var(--radius);
+  border: 1px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+}
+.alert .btn { padding: var(--s1) var(--s2); border: 0; background: transparent; }
+
+.folder-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
+.folder { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); padding: var(--s4); }
+.folder-info { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+.folder-path { font-family: var(--font-mono); font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-meta { color: var(--muted); font-size: 13px; }
+.badge {
+  display: inline-block; padding: 0 var(--s2); border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface-2);
+}
+.badge.danger { border-color: var(--danger); color: var(--danger); }
+
+/* ---------- Dialog ---------- */
+.dialog {
+  max-width: 480px; width: calc(100% - 2 * var(--s5));
+  padding: var(--s5); border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  box-shadow: 0 0 calc(32px * var(--glow)) color-mix(in srgb, var(--primary) 40%, transparent);
+}
+.dialog::backdrop { background: rgba(5, 8, 20, 0.6); backdrop-filter: blur(2px); }
+.dialog h2 { font-size: 18px; }
+.dialog-body { margin: var(--s4) 0 var(--s5); display: flex; flex-direction: column; gap: var(--s3); }
+.dialog-body p { margin: 0; overflow-wrap: anywhere; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: var(--s3); }
+.btn.danger { background: var(--danger); border-color: transparent; color: #fff; }
+.btn.danger:hover { filter: brightness(1.1); }
