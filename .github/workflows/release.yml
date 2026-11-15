@@ -68,16 +68,15 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Build AppImage and .deb
+      - name: Build AppImage
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          pnpm tauri build --config "{\"version\":\"$VERSION\"}" --bundles appimage,deb
+          pnpm tauri build --config "{\"version\":\"$VERSION\"}" --bundles appimage
 
       - name: Collect artifacts
         run: |
           mkdir -p dist-release
           cp src-tauri/target/release/bundle/appimage/*.AppImage "dist-release/Sift-${GITHUB_REF_NAME}-linux-x86_64.AppImage"
-          cp src-tauri/target/release/bundle/deb/*.deb "dist-release/Sift-${GITHUB_REF_NAME}-linux-amd64.deb"
           chmod +x dist-release/*.AppImage
 
       - uses: actions/upload-artifact@v4
@@ -148,10 +147,6 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
-
-      - name: Checksums
-        working-directory: artifacts
-        run: sha256sum * > SHA256SUMS.txt
 
       - name: Create GitHub release
         env:
