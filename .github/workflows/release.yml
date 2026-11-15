@@ -1,0 +1,174 @@
+name: Release
+
+# Runs when a tag like v1.0.0 is pushed. The tagged commit must be on main.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Tagged commit must be on main
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag ${GITHUB_REF_NAME} is not on the main branch. Tag a commit that has been merged to main."
+            exit 1
+          fi
+
+      - name: Tag must match the app version
+        run: |
+          expected="${GITHUB_REF_NAME#v}"
+          conf=$(grep -m1 '"version"' src-tauri/tauri.conf.json | sed -E 's/.*"version": *"([^"]+)".*/\1/')
+          cargo=$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')
+          pkg=$(grep -m1 '"version"' package.json | sed -E 's/.*"version": *"([^"]+)".*/\1/')
+          echo "tag=$expected tauri.conf.json=$conf Cargo.toml=$cargo package.json=$pkg"
+          for v in "$conf" "$cargo" "$pkg"; do
+            if [ "$v" != "$expected" ]; then
+              echo "::error::Version mismatch: tag is $expected but a manifest says $v. Bump src-tauri/tauri.conf.json, src-tauri/Cargo.toml and package.json, commit to main, then re-tag."
+              exit 1
+            fi
+          done
+
+  build-linux:
+    name: Build (Linux)
+    needs: verify
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libssl-dev libxdo-dev patchelf libfuse2 file
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: cargo-linux-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: cargo-linux-
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build AppImage and .deb
+        run: pnpm tauri build --bundles appimage,deb
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist-release
+          cp src-tauri/target/release/bundle/appimage/*.AppImage "dist-release/Sift-${GITHUB_REF_NAME}-linux-x86_64.AppImage"
+          cp src-tauri/target/release/bundle/deb/*.deb "dist-release/Sift-${GITHUB_REF_NAME}-linux-amd64.deb"
+          chmod +x dist-release/*.AppImage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist-release/*
+          if-no-files-found: error
+
+  build-windows:
+    name: Build (Windows)
+    needs: verify
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: cargo-windows-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: cargo-windows-
+
+      - run: pnpm install --frozen-lockfile
+
+      # Standalone executable, no installer.
+      - name: Build executable
+        run: pnpm tauri build --no-bundle
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p dist-release
+          cp src-tauri/target/release/sift.exe "dist-release/Sift-${GITHUB_REF_NAME}-windows-x64.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist-release/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: artifacts
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          flags=""
+          case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" artifacts/* \
+            --title "Sift $GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag $flags
