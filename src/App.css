@@ -1,0 +1,34 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f4f6fb;
+  --fg: #12162a;
+  --muted: #5b6482;
+  --accent: #00a3ff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0a0d1a;
+    --fg: #e6ebff;
+    --muted: #8892b8;
+    --accent: #00e5ff;
+  }
+}
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+}
+
+.shell {
+  height: 100%;
+  display: grid;
+  place-content: center;
+  text-align: center;
+}
+
+.shell h1 { color: var(--accent); letter-spacing: 0.2em; text-transform: uppercase; }
+.shell p { color: var(--muted); }
