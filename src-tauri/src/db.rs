@@ -14,6 +14,30 @@ const MIGRATIONS: &[&str] = &[
         key     TEXT PRIMARY KEY,
         value   TEXT NOT NULL
     );",
+    "CREATE TABLE scans (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+        finished_at   INTEGER,
+        status        TEXT NOT NULL DEFAULT 'running',
+        files_seen    INTEGER NOT NULL DEFAULT 0,
+        files_hashed  INTEGER NOT NULL DEFAULT 0,
+        files_cached  INTEGER NOT NULL DEFAULT 0,
+        errors        INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE files (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        folder_id       INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+        path            TEXT NOT NULL UNIQUE,
+        size            INTEGER NOT NULL,
+        mtime_ns        INTEGER NOT NULL,
+        file_id         TEXT,
+        sha256          TEXT,
+        last_seen_scan  INTEGER NOT NULL
+    );
+    CREATE INDEX files_size ON files(size);
+    CREATE INDEX files_sha ON files(sha256);
+    CREATE INDEX files_folder ON files(folder_id);
+    ALTER TABLE folders ADD COLUMN last_scanned_at INTEGER;",
 ];
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -21,6 +45,8 @@ pub struct Folder {
     pub id: i64,
     pub path: String,
     pub added_at: i64,
+    pub last_scanned_at: Option<i64>,
+    pub file_count: i64,
     /// False when the folder no longer exists on disk (deleted, unmounted drive...).
     pub exists: bool,
 }
@@ -31,7 +57,7 @@ pub fn open(path: &Path) -> Result<Connection, String> {
 }
 
 pub fn init(conn: Connection) -> Result<Connection, String> {
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
         .map_err(|e| e.to_string())?;
     migrate(&conn)?;
     Ok(conn)
@@ -50,7 +76,11 @@ fn migrate(conn: &Connection) -> Result<(), String> {
 
 pub fn list_folders(conn: &Connection) -> Result<Vec<Folder>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, path, added_at FROM folders ORDER BY path COLLATE NOCASE")
+        .prepare(
+            "SELECT f.id, f.path, f.added_at, f.last_scanned_at,
+                    (SELECT COUNT(*) FROM files x WHERE x.folder_id = f.id)
+             FROM folders f ORDER BY f.path COLLATE NOCASE",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
@@ -60,6 +90,8 @@ pub fn list_folders(conn: &Connection) -> Result<Vec<Folder>, String> {
                 exists: Path::new(&path).is_dir(),
                 path,
                 added_at: r.get(2)?,
+                last_scanned_at: r.get(3)?,
+                file_count: r.get(4)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -96,7 +128,18 @@ pub fn add_folder(conn: &Connection, raw: &str) -> Result<Folder, String> {
     let added_at = conn
         .query_row("SELECT added_at FROM folders WHERE id = ?1", params![id], |r| r.get(0))
         .map_err(|e| e.to_string())?;
-    Ok(Folder { id, path, added_at, exists: true })
+    Ok(Folder { id, path, added_at, last_scanned_at: None, file_count: 0, exists: true })
+}
+
+/// (id, path) of every tracked folder.
+pub fn folder_rows(conn: &Connection) -> Result<Vec<(i64, String)>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, path FROM folders ORDER BY id")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
 }
 
 pub fn remove_folder(conn: &Connection, id: i64) -> Result<(), String> {
@@ -172,6 +215,21 @@ mod tests {
         std::fs::write(&file, b"x").unwrap();
         assert!(add_folder(&conn, file.to_str().unwrap()).is_err());
         assert!(add_folder(&conn, dir.path().join("nope").to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn removing_folder_cascades_to_files() {
+        let conn = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let f = add_folder(&conn, dir.path().to_str().unwrap()).unwrap();
+        conn.execute(
+            "INSERT INTO files (folder_id, path, size, mtime_ns, last_seen_scan) VALUES (?1, 'x', 1, 1, 1)",
+            params![f.id],
+        )
+        .unwrap();
+        remove_folder(&conn, f.id).unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
     }
 
     #[test]

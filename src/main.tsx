@@ -6,6 +6,7 @@ import "@fontsource/anonymous-pro/400.css";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { ScanProvider } from "./scan/ScanProvider";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { applyTheme, loadTheme } from "./theme/theme";
 
@@ -17,7 +18,9 @@ async function start() {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
       <ThemeProvider initial={theme}>
-        <App />
+        <ScanProvider>
+          <App />
+        </ScanProvider>
       </ThemeProvider>
     </React.StrictMode>,
   );

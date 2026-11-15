@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { addFolder, listFolders, pickFolder, removeFolder, type Folder } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog";
+import ScanBar from "../components/ScanBar";
+import { formatNumber } from "../format";
+import { useScan } from "../scan/ScanProvider";
 import { Empty, Screen } from "./Placeholder";
 
 const errMsg = (e: unknown) => (typeof e === "string" ? e : (e as Error)?.message ?? "Unknown error");
@@ -10,6 +13,7 @@ export default function Folders() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<Folder | null>(null);
+  const { running, start, version } = useScan();
 
   const refresh = useCallback(async () => {
     try {
@@ -22,7 +26,7 @@ export default function Folders() {
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, version]);
 
   async function onAdd() {
     setError(null);
@@ -57,8 +61,17 @@ export default function Folders() {
         <button className="btn primary" onClick={onAdd} disabled={busy}>
           + Add folder
         </button>
+        <button
+          className="btn"
+          onClick={() => void start()}
+          disabled={running || !folders?.some((f) => f.exists)}
+        >
+          {running ? "Scanning…" : "Scan all"}
+        </button>
         <span className="muted">Removing a folder never deletes any files.</span>
       </div>
+
+      <ScanBar />
 
       {error && (
         <div className="alert" role="alert">
@@ -78,11 +91,15 @@ export default function Folders() {
               <div className="folder-info">
                 <span className="folder-path" title={f.path}>{f.path}</span>
                 <span className="folder-meta">
-                  Added {new Date(f.added_at * 1000).toLocaleDateString()} ·{" "}
-                  {f.exists ? (
-                    <span className="badge">Not scanned</span>
-                  ) : (
+                  {!f.exists ? (
                     <span className="badge danger">Missing</span>
+                  ) : f.last_scanned_at ? (
+                    <>
+                      {formatNumber(f.file_count)} images · scanned{" "}
+                      {new Date(f.last_scanned_at * 1000).toLocaleString()}
+                    </>
+                  ) : (
+                    <span className="badge">Not scanned</span>
                   )}
                 </span>
               </div>
