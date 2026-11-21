@@ -15,9 +15,23 @@ const pixels = (f: DupFile) => (f.width ?? 0) * (f.height ?? 0);
 const age = (f: DupFile) => (f.created == null ? f.modified : Math.min(f.created, f.modified));
 const byPath = (a: DupFile, b: DupFile) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 
-/** Same order the backend uses for the recommended copy: resolution, then age, then path. */
-const best = (files: DupFile[]) =>
-  [...files].sort((a, b) => pixels(b) - pixels(a) || age(a) - age(b) || byPath(a, b))[0];
+/**
+ * Same order the backend uses for the recommended copy: among the copies with at least 75% of
+ * the largest pixel count, the sharpest (when known), then resolution, age and path.
+ */
+const best = (files: DupFile[]) => {
+  const maxPx = Math.max(0, ...files.map(pixels));
+  const tier = (f: DupFile) => (pixels(f) * 4 >= maxPx * 3 ? 1 : 0);
+  const sharp = (f: DupFile) => f.sharpness ?? -1;
+  return [...files].sort(
+    (a, b) =>
+      tier(b) - tier(a) ||
+      sharp(b) - sharp(a) ||
+      pixels(b) - pixels(a) ||
+      age(a) - age(b) ||
+      byPath(a, b),
+  )[0];
+};
 
 /** The copy a rule would keep, or null when the rule doesn't apply to this group. */
 export function pickKeeper(g: DupGroup, rule: KeepRule, master: string): DupFile | null {

@@ -25,6 +25,7 @@ const MODES: { id: ThemeMode; label: MsgKey }[] = [
 const TYPES_KEY = "scan.file_types";
 const EXCLUDED_KEY = "scan.excluded_paths";
 const SIMILAR_KEY = "scan.similar";
+const MONITOR_KEY = "monitor.enabled";
 const SENSITIVITY_KEY = "similar.sensitivity";
 const SENSITIVITIES: { id: string; label: MsgKey }[] = [
   { id: "strict", label: "settings.scan.sensitivity.strict" },
@@ -38,11 +39,13 @@ function Scanning() {
   const [exts, setExts] = useState<string[]>(ALL_EXTS);
   const [excluded, setExcluded] = useState<string[]>([]);
   const [similar, setSimilar] = useState(true);
+  const [monitor, setMonitor] = useState(false);
   const [sensitivity, setSensitivity] = useState("normal");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     getSetting(SIMILAR_KEY).then((v) => setSimilar(v !== "0")).catch((e) => setError(errMsg(e)));
+    getSetting(MONITOR_KEY).then((v) => setMonitor(v === "1")).catch((e) => setError(errMsg(e)));
     getSetting(SENSITIVITY_KEY)
       .then((v) => v && SENSITIVITIES.some((s) => s.id === v) && setSensitivity(v))
       .catch((e) => setError(errMsg(e)));
@@ -105,6 +108,21 @@ function Scanning() {
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="field">
+        <label className="inline check">
+          <input
+            type="checkbox"
+            checked={monitor}
+            onChange={(e) => {
+              const on = e.target.checked;
+              void saveSetting(MONITOR_KEY, on ? "1" : "0", () => setMonitor(on));
+            }}
+          />
+          <span className="field-label">{t("settings.scan.monitor")}</span>
+        </label>
+        <span className="muted">{t("settings.scan.monitorHelp")}</span>
       </div>
 
       <div className="field">

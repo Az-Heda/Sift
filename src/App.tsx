@@ -7,6 +7,7 @@ import Duplicates from "./screens/Duplicates";
 import Folders from "./screens/Folders";
 import Quarantine from "./screens/Quarantine";
 import Settings from "./screens/Settings";
+import Storage from "./screens/Storage";
 import { ReviewProvider } from "./review/ReviewProvider";
 
 const SCREENS: Record<ScreenId, () => React.JSX.Element> = {
@@ -14,6 +15,7 @@ const SCREENS: Record<ScreenId, () => React.JSX.Element> = {
   folders: Folders,
   duplicates: Duplicates,
   compare: Compare,
+  storage: Storage,
   quarantine: Quarantine,
   settings: Settings,
 };

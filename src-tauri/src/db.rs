@@ -56,6 +56,8 @@ const MIGRATIONS: &[&str] = &[
     // pattern; `phash_failed` marks images that could not be decoded so they aren't retried.
     "ALTER TABLE files ADD COLUMN phash INTEGER;
     ALTER TABLE files ADD COLUMN phash_failed INTEGER NOT NULL DEFAULT 0;",
+    // Sharpness score of each fingerprinted image (best-photo recommendation).
+    "ALTER TABLE files ADD COLUMN sharpness REAL;",
 ];
 
 #[derive(Debug, Serialize, PartialEq)]

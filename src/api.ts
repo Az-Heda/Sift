@@ -58,6 +58,8 @@ export interface DupFile {
   /** 0 x 0 means the dimensions could not be read. */
   width: number | null;
   height: number | null;
+  /** Similar groups only: higher is sharper. */
+  sharpness: number | null;
 }
 
 /** "exact": byte-identical files. "similar": images that look alike (perceptual hash). */
@@ -116,6 +118,39 @@ export interface Insights {
 export const getInsights = () => invoke<Insights>("get_insights");
 export const revealFile = (id: number) => invoke<void>("reveal_file", { id });
 export const openContainingFolder = (id: number) => invoke<void>("open_containing_folder", { id });
+
+// ---------- Storage analytics ----------
+export interface CategoryUsage {
+  category: "image" | "video" | "audio" | "document" | "archive" | "other";
+  files: number;
+  bytes: number;
+}
+
+export interface StoredFile {
+  id: number;
+  path: string;
+  size: number;
+  /** Unix seconds. */
+  modified: number;
+}
+
+export interface FolderUsage {
+  path: string;
+  files: number;
+  bytes: number;
+}
+
+export interface StorageAnalytics {
+  categories: CategoryUsage[];
+  largest: StoredFile[];
+  folders: FolderUsage[];
+  /** Biggest files not modified for two years. */
+  old: StoredFile[];
+}
+
+export const getStorage = () => invoke<StorageAnalytics>("get_storage");
+/** Walks the disk, so it can take a moment on big folders. */
+export const getEmptyFolders = () => invoke<string[]>("get_empty_folders");
 
 /** Reads a JSON-encoded string list from settings. */
 export async function getList(key: string): Promise<string[] | null> {

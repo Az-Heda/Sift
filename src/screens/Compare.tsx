@@ -77,6 +77,12 @@ function Pane({
             <dd>{hasDims ? `${file.width} × ${file.height}` : t("common.unknown")}</dd>
           </>
         )}
+        {file.sharpness != null && (
+          <>
+            <dt>{t("common.sharpness")}</dt>
+            <dd>{Math.round(file.sharpness)}</dd>
+          </>
+        )}
         <dt>{t("common.size")}</dt><dd>{formatBytes(file.size)}</dd>
         <dt>{t("common.modified")}</dt><dd>{formatDate(file.modified)}</dd>
         <dt>{t("common.created")}</dt><dd>{file.created ? formatDate(file.created) : t("common.unknown")}</dd>

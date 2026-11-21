@@ -35,6 +35,38 @@ fn is_supported(ext: &str) -> bool {
     supported_exts().any(|e| e == ext)
 }
 
+/// "image" | "video" | "audio" | "document" | "archive" | "other"
+pub fn category_of(path: &Path) -> &'static str {
+    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    let ext = ext.as_str();
+    [
+        ("image", IMAGE_EXTS),
+        ("video", VIDEO_EXTS),
+        ("audio", AUDIO_EXTS),
+        ("document", DOCUMENT_EXTS),
+        ("archive", ARCHIVE_EXTS),
+    ]
+    .into_iter()
+    .find(|(_, list)| list.contains(&ext))
+    .map_or("other", |(name, _)| name)
+}
+
+/// True if the file's extension is one Sift can scan.
+pub fn is_supported_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| is_supported(&e.to_ascii_lowercase()))
+        .unwrap_or(false)
+}
+
+/// True if any folder on the path is one scans never enter (`.git`, caches, trash...).
+pub fn in_excluded_dir(path: &Path) -> bool {
+    path.components().any(|c| {
+        let name = c.as_os_str().to_string_lossy().to_lowercase();
+        EXCLUDED_DIRS.contains(&name.as_str()) || name.starts_with(".trash-")
+    })
+}
+
 /// True for formats the `image` crate decodes here (previews, dimensions, perceptual hashes).
 pub fn is_image_path(path: &Path) -> bool {
     path.extension()
@@ -137,7 +169,7 @@ impl Config {
             .unwrap_or(false)
     }
 
-    fn is_excluded(&self, entry: &DirEntry) -> bool {
+    pub(crate) fn is_excluded(&self, entry: &DirEntry) -> bool {
         if entry.depth() == 0 || !entry.file_type().is_dir() {
             return false;
         }
@@ -198,6 +230,8 @@ fn flush_rows(conn: &mut Connection, rows: &mut Vec<Row>, scan_id: i64) -> Resul
                                   THEN files.height ELSE NULL END,
                     phash = CASE WHEN files.size = excluded.size AND files.mtime_ns = excluded.mtime_ns
                                  THEN files.phash ELSE NULL END,
+                    sharpness = CASE WHEN files.size = excluded.size AND files.mtime_ns = excluded.mtime_ns
+                                     THEN files.sharpness ELSE NULL END,
                     phash_failed = CASE WHEN files.size = excluded.size AND files.mtime_ns = excluded.mtime_ns
                                         THEN files.phash_failed ELSE 0 END,
                     size = excluded.size,
@@ -454,6 +488,8 @@ pub struct DupFile {
     pub created: Option<i64>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// Laplacian-variance sharpness (similar groups only); higher is sharper.
+    pub sharpness: Option<f64>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -518,6 +554,7 @@ pub fn duplicate_groups(conn: &Connection) -> Result<Vec<DupGroup>, String> {
                 created: None,
                 width,
                 height,
+                sharpness: None,
             },
             fid,
         ));

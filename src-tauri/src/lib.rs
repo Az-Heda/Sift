@@ -1,8 +1,10 @@
 mod cleanup;
 mod db;
+mod monitor;
 mod review;
 mod scan;
 mod similar;
+mod storage;
 mod thumbs;
 
 use std::path::PathBuf;
@@ -26,6 +28,38 @@ impl Db {
 /// Location of the database file, so the scan thread can open its own connection
 /// instead of holding the UI's lock for the length of a scan.
 pub struct DbPath(PathBuf);
+
+/// The live folder watcher, if monitoring is on. Dropping it stops monitoring.
+#[derive(Default)]
+pub struct MonitorState(Mutex<Option<notify::RecommendedWatcher>>);
+
+/// (Re)builds the folder watcher from the current settings and folders. Call it whenever
+/// something that decides what is watched changes.
+fn refresh_monitor(app: &AppHandle) {
+    let build = || -> Result<Option<notify::RecommendedWatcher>, String> {
+        let db = app.state::<Db>();
+        let (folders, ignored) = db.with(|c| {
+            if !monitor::enabled(c)? {
+                return Ok((Vec::new(), Vec::new()));
+            }
+            let folders: Vec<PathBuf> = db::folder_rows(c)?.into_iter().map(|(_, p)| p.into()).collect();
+            let mut config = scan::Config::load(c)?;
+            config.excluded_paths.push(cleanup::dir(c, &default_quarantine_dir(app)?)?);
+            Ok((folders, config.excluded_paths))
+        })?;
+        if folders.is_empty() {
+            return Ok(None);
+        }
+        monitor::start(app, &folders, ignored).map(Some)
+    };
+    let watcher = build().unwrap_or_else(|e| {
+        eprintln!("folder monitoring unavailable: {e}");
+        None
+    });
+    if let Ok(mut g) = app.state::<MonitorState>().0.lock() {
+        *g = watcher; // replaces (and so stops) any previous watcher
+    }
+}
 
 #[derive(Default)]
 struct Running {
@@ -52,20 +86,26 @@ impl Drop for ClearOnDrop {
     }
 }
 
-#[tauri::command]
-fn start_scan(app: AppHandle, state: State<'_, ScanState>, path: State<'_, DbPath>) -> Result<(), String> {
+/// Message of the error `launch_scan` returns while another scan is in flight.
+pub const SCAN_BUSY: &str = "A scan is already running";
+
+/// Starts a background scan. Used by the Scan button and by folder monitoring.
+pub fn launch_scan(app: &AppHandle) -> Result<(), String> {
     let cancel = {
+        let state = app.state::<ScanState>();
         let mut g = state.0.lock().map_err(|_| "scan state poisoned".to_string())?;
         if g.is_some() {
-            return Err("A scan is already running".into());
+            return Err(SCAN_BUSY.into());
         }
         let running = Running::default();
         let cancel = running.cancel.clone();
         *g = Some(running);
         cancel
     };
+    let _ = app.emit("scan-started", ());
 
-    let db_path = path.0.clone();
+    let db_path = app.state::<DbPath>().0.clone();
+    let app = app.clone();
     std::thread::spawn(move || {
         let _guard = ClearOnDrop(app.clone());
         let result = (|| {
@@ -99,6 +139,12 @@ fn start_scan(app: AppHandle, state: State<'_, ScanState>, path: State<'_, DbPat
         }
     });
     Ok(())
+}
+
+
+#[tauri::command]
+fn start_scan(app: AppHandle) -> Result<(), String> {
+    launch_scan(&app)
 }
 
 #[tauri::command]
@@ -137,6 +183,27 @@ async fn list_similar(db: State<'_, Db>) -> Result<Vec<scan::DupGroup>, String> 
 }
 
 #[tauri::command]
+async fn get_storage(db: State<'_, Db>) -> Result<storage::Analytics, String> {
+    db.with(storage::analytics)
+}
+
+/// Walks the disk, so it runs off the async worker and is requested separately.
+#[tauri::command]
+async fn get_empty_folders(app: AppHandle) -> Result<Vec<String>, String> {
+    let default = default_quarantine_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = &app.state::<Db>();
+        db.with(|c| {
+            let mut config = scan::Config::load(c)?;
+            config.excluded_paths.push(cleanup::dir(c, &default)?);
+            storage::empty_folders(c, &config)
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn get_stats(db: State<'_, Db>) -> Result<scan::Stats, String> {
     db.with(scan::stats)
 }
@@ -167,7 +234,9 @@ async fn get_quarantine_dir(app: AppHandle, db: State<'_, Db>) -> Result<Quarant
 #[tauri::command]
 async fn set_quarantine_dir(app: AppHandle, db: State<'_, Db>, path: String) -> Result<QuarantineDir, String> {
     let default = default_quarantine_dir(&app)?;
-    db.with(|c| Ok(QuarantineDir { path: cleanup::set_dir(c, &default, &path)?, default: default.clone() }))
+    let dir = db.with(|c| Ok(QuarantineDir { path: cleanup::set_dir(c, &default, &path)?, default: default.clone() }))?;
+    refresh_monitor(&app); // the new quarantine folder must not trigger rescans
+    Ok(dir)
 }
 
 #[tauri::command]
@@ -254,13 +323,17 @@ async fn list_folders(db: State<'_, Db>) -> Result<Vec<db::Folder>, String> {
 }
 
 #[tauri::command]
-async fn add_folder(db: State<'_, Db>, path: String) -> Result<db::Folder, String> {
-    db.with(|c| db::add_folder(c, &path))
+async fn add_folder(app: AppHandle, db: State<'_, Db>, path: String) -> Result<db::Folder, String> {
+    let folder = db.with(|c| db::add_folder(c, &path))?;
+    refresh_monitor(&app);
+    Ok(folder)
 }
 
 #[tauri::command]
-async fn remove_folder(db: State<'_, Db>, id: i64) -> Result<(), String> {
-    db.with(|c| db::remove_folder(c, id))
+async fn remove_folder(app: AppHandle, db: State<'_, Db>, id: i64) -> Result<(), String> {
+    db.with(|c| db::remove_folder(c, id))?;
+    refresh_monitor(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -269,8 +342,12 @@ async fn get_setting(db: State<'_, Db>, key: String) -> Result<Option<String>, S
 }
 
 #[tauri::command]
-async fn set_setting(db: State<'_, Db>, key: String, value: String) -> Result<(), String> {
-    db.with(|c| db::set_setting(c, &key, &value))
+async fn set_setting(app: AppHandle, db: State<'_, Db>, key: String, value: String) -> Result<(), String> {
+    db.with(|c| db::set_setting(c, &key, &value))?;
+    if key == monitor::SETTING_KEY || key == "scan.excluded_paths" {
+        refresh_monitor(&app);
+    }
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -325,6 +402,8 @@ pub fn run() {
             app.manage(Db(Mutex::new(conn)));
             app.manage(DbPath(db_path));
             app.manage(ScanState::default());
+            app.manage(MonitorState::default());
+            refresh_monitor(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -338,6 +417,8 @@ pub fn run() {
             scan_status,
             list_duplicates,
             list_similar,
+            get_storage,
+            get_empty_folders,
             get_stats,
             get_insights,
             quarantine_files,

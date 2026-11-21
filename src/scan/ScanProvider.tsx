@@ -47,6 +47,14 @@ export function ScanProvider({ children }: { children: ReactNode }) {
     const track = (p: Promise<() => void>) =>
       p.then((u) => (disposed ? u() : unlisten.push(u)));
 
+    // Scans can also start by themselves (folder monitoring), so follow the backend.
+    track(
+      listen("scan-started", () => {
+        setRunning(true);
+        setSummary(null);
+        setError(null);
+      }),
+    );
     track(listen<ScanProgress>("scan-progress", (e) => setProgress(e.payload)));
     track(
       listen<ScanSummary>("scan-finished", (e) => {

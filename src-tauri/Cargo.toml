@@ -28,6 +28,7 @@ dunce = "1.0.5"
 walkdir = "2.5.0"
 sha2 = "0.11.1"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif", "tiff"] }
+notify = "8"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

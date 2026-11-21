@@ -56,13 +56,23 @@ fn age(f: &DupFile) -> i64 {
     f.created.map_or(f.modified, |c| c.min(f.modified))
 }
 
-/// Highest resolution, then oldest, then path (for a deterministic result).
+/// Best copy to keep. Among the near-highest-resolution copies (at least 75% of the largest
+/// pixel count), the sharpest wins when sharpness is known; then highest resolution, then
+/// oldest, then path (for a deterministic result). Exact copies share resolution and have no
+/// sharpness, so for them this is simply "highest resolution, then oldest".
 pub fn recommend(files: &[DupFile]) -> i64 {
+    let max_px = files.iter().map(pixels).max().unwrap_or(0);
+    let top_tier = |f: &DupFile| pixels(f) * 4 >= max_px * 3;
     files
         .iter()
         .min_by(|a, b| {
-            pixels(b)
-                .cmp(&pixels(a))
+            top_tier(b)
+                .cmp(&top_tier(a))
+                .then_with(|| {
+                    let (sa, sb) = (a.sharpness.unwrap_or(-1.0), b.sharpness.unwrap_or(-1.0));
+                    sb.total_cmp(&sa)
+                })
+                .then(pixels(b).cmp(&pixels(a)))
                 .then(age(a).cmp(&age(b)))
                 .then(a.path.cmp(&b.path))
         })
@@ -84,12 +94,36 @@ mod tests {
             created,
             width: Some(w),
             height: Some(h),
+            sharpness: None,
         }
     }
 
     #[test]
     fn prefers_highest_resolution() {
         let files = [f(1, "a", 100, 100, 1, None), f(2, "b", 200, 200, 99, None)];
+        assert_eq!(recommend(&files), 2);
+    }
+
+    fn sharp(id: i64, w: u32, h: u32, sharpness: f64) -> DupFile {
+        DupFile { sharpness: Some(sharpness), ..f(id, &format!("p{id}"), w, h, 1, None) }
+    }
+
+    #[test]
+    fn prefers_the_sharpest_among_high_resolution_copies() {
+        // Same-ish resolution: the sharper one wins even with fewer pixels (within 75%).
+        let files = [sharp(1, 100, 100, 5.0), sharp(2, 90, 90, 50.0)];
+        assert_eq!(recommend(&files), 2);
+    }
+
+    #[test]
+    fn a_much_smaller_image_never_wins_on_sharpness() {
+        let files = [sharp(1, 100, 100, 5.0), sharp(2, 40, 40, 500.0)];
+        assert_eq!(recommend(&files), 1);
+    }
+
+    #[test]
+    fn known_sharpness_beats_unknown_within_the_top_tier() {
+        let files = [f(1, "a", 100, 100, 1, None), sharp(2, 100, 100, 1.0)];
         assert_eq!(recommend(&files), 2);
     }
 

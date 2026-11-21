@@ -114,8 +114,43 @@ pub fn phash(img: &image::DynamicImage) -> u64 {
         .fold(0u64, |h, (i, &v)| if v > median { h | (1 << i) } else { h })
 }
 
-pub fn phash_file(path: &str) -> Result<u64, image::ImageError> {
-    Ok(phash(&image::open(path)?))
+/// Largest side the sharpness measure looks at, so scores compare across resolutions.
+const SHARPNESS_SIDE: u32 = 512;
+
+/// Sharpness score: variance of the Laplacian of the grayscale picture, reduced to at most
+/// `SHARPNESS_SIDE` pixels on its long side. Blurry photos score low, detailed ones high.
+pub fn sharpness(img: &image::DynamicImage) -> f64 {
+    let gray = img.to_luma8();
+    let (w, h) = gray.dimensions();
+    let gray = if w.max(h) > SHARPNESS_SIDE {
+        let scale = SHARPNESS_SIDE as f32 / w.max(h) as f32;
+        let (nw, nh) = (((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1));
+        image::imageops::resize(&gray, nw, nh, FilterType::Triangle)
+    } else {
+        gray
+    };
+    let (w, h) = gray.dimensions();
+    if w < 3 || h < 3 {
+        return 0.0;
+    }
+    let px = |x: u32, y: u32| gray.get_pixel(x, y).0[0] as f64;
+    let (mut sum, mut sum_sq, mut n) = (0.0, 0.0, 0.0);
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let lap = px(x - 1, y) + px(x + 1, y) + px(x, y - 1) + px(x, y + 1) - 4.0 * px(x, y);
+            sum += lap;
+            sum_sq += lap * lap;
+            n += 1.0;
+        }
+    }
+    let mean = sum / n;
+    sum_sq / n - mean * mean
+}
+
+/// Decodes once and returns both the perceptual hash and the sharpness score.
+pub fn analyse_file(path: &str) -> Result<(u64, f64), image::ImageError> {
+    let img = image::open(path)?;
+    Ok((phash(&img), sharpness(&img)))
 }
 
 pub fn hamming(a: u64, b: u64) -> u32 {
@@ -131,12 +166,14 @@ pub struct FpCandidate {
     pub mtime: i64,
 }
 
-/// Files seen in `scan_id` that have no fingerprint yet (and haven't failed to decode).
+/// Files seen in `scan_id` that have no fingerprint yet (and haven't failed to decode), plus
+/// fingerprinted ones from before sharpness was recorded.
 pub fn candidates(conn: &Connection, scan_id: i64) -> Result<Vec<FpCandidate>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, path, size, mtime_ns FROM files
-             WHERE last_seen_scan = ?1 AND phash IS NULL AND phash_failed = 0",
+             WHERE last_seen_scan = ?1
+               AND ((phash IS NULL AND phash_failed = 0) OR (phash IS NOT NULL AND sharpness IS NULL))",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -150,36 +187,38 @@ pub fn candidates(conn: &Connection, scan_id: i64) -> Result<Vec<FpCandidate>, S
 }
 
 enum Outcome {
-    Hash(u64),
+    Hash(u64, f64),
     Undecodable,
     /// Changed while we were reading it: try again next scan.
     Changed,
 }
 
 fn fingerprint_one(c: &FpCandidate) -> Outcome {
-    let result = phash_file(&c.path);
+    let result = analyse_file(&c.path);
     let unchanged = fs::metadata(&c.path)
         .map(|m| m.len() as i64 == c.size && mtime_ns(&m) == c.mtime)
         .unwrap_or(false);
     match (result, unchanged) {
         (_, false) => Outcome::Changed,
-        (Ok(h), true) => Outcome::Hash(h),
+        (Ok((h, s)), true) => Outcome::Hash(h, s),
         (Err(_), true) => Outcome::Undecodable,
     }
 }
 
-fn flush(conn: &mut Connection, pending: &mut Vec<(i64, Option<u64>)>) -> Result<(), String> {
+type Analysed = Option<(u64, f64)>;
+
+fn flush(conn: &mut Connection, pending: &mut Vec<(i64, Analysed)>) -> Result<(), String> {
     if pending.is_empty() {
         return Ok(());
     }
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     {
         let mut stmt = tx
-            .prepare_cached("UPDATE files SET phash = ?2, phash_failed = ?3 WHERE id = ?1")
+            .prepare_cached("UPDATE files SET phash = ?2, phash_failed = ?3, sharpness = ?4 WHERE id = ?1")
             .map_err(|e| e.to_string())?;
         for (id, h) in pending.iter() {
             // SQLite integers are signed: store the bit pattern.
-            stmt.execute(params![id, h.map(|h| h as i64), h.is_none() as i64])
+            stmt.execute(params![id, h.map(|(h, _)| h as i64), h.is_none() as i64, h.map(|(_, s)| s)])
                 .map_err(|e| e.to_string())?;
         }
     }
@@ -206,7 +245,7 @@ pub fn fingerprint(
 
     let mut stored = 0u64;
     let mut done = 0u64;
-    let mut pending: Vec<(i64, Option<u64>)> = Vec::with_capacity(FP_BATCH);
+    let mut pending: Vec<(i64, Analysed)> = Vec::with_capacity(FP_BATCH);
     let mut failure: Option<String> = None;
 
     std::thread::scope(|s| {
@@ -231,7 +270,7 @@ pub fn fingerprint(
         for (id, outcome) in rx {
             done += 1;
             match outcome {
-                Outcome::Hash(h) => pending.push((id, Some(h))),
+                Outcome::Hash(h, s) => pending.push((id, Some((h, s)))),
                 Outcome::Undecodable => pending.push((id, None)),
                 Outcome::Changed => {}
             }
@@ -380,7 +419,7 @@ pub fn similar_groups(conn: &Connection) -> Result<Vec<DupGroup>, String> {
     let max_dist = threshold(conn)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, path, size, sha256, file_id, mtime_ns, width, height, phash
+            "SELECT id, path, size, sha256, file_id, mtime_ns, width, height, phash, sharpness
              FROM files WHERE phash IS NOT NULL ORDER BY id",
         )
         .map_err(|e| e.to_string())?;
@@ -396,13 +435,14 @@ pub fn similar_groups(conn: &Connection) -> Result<Vec<DupGroup>, String> {
                 r.get::<_, Option<u32>>(6)?,
                 r.get::<_, Option<u32>>(7)?,
                 r.get::<_, i64>(8)? as u64,
+                r.get::<_, Option<f64>>(9)?,
             ))
         })
         .map_err(|e| e.to_string())?;
 
     let mut all: Vec<(Row, Option<String>)> = Vec::new();
     for row in rows {
-        let (id, path, size, sha, fid, mtime, width, height, ph) = row.map_err(|e| e.to_string())?;
+        let (id, path, size, sha, fid, mtime, width, height, ph, sharp) = row.map_err(|e| e.to_string())?;
         all.push((
             Row {
                 file: DupFile {
@@ -413,6 +453,7 @@ pub fn similar_groups(conn: &Connection) -> Result<Vec<DupGroup>, String> {
                     created: None,
                     width,
                     height,
+                    sharpness: sharp,
                     file_id: fid.clone(),
                 },
                 sha,
@@ -463,6 +504,7 @@ pub fn similar_groups(conn: &Connection) -> Result<Vec<DupGroup>, String> {
                     created: None,
                     width: f.width,
                     height: f.height,
+                    sharpness: f.sharpness,
                     file_id: f.file_id.clone(),
                 }
             })
@@ -569,6 +611,38 @@ mod tests {
     }
 
     #[test]
+    fn blur_lowers_sharpness() {
+        // Photo-like structure plus fine, deterministic texture (so blur has detail to remove).
+        let mut rgb = picture(1, 256).to_rgb8();
+        for (x, y, p) in rgb.enumerate_pixels_mut() {
+            let n = ((x * 7919 + y * 104729) % 41) as i16 - 20;
+            for c in p.0.iter_mut() {
+                *c = (*c as i16 + n).clamp(0, 255) as u8;
+            }
+        }
+        let sharp = image::DynamicImage::ImageRgb8(rgb);
+        let blurred = sharp.blur(3.0);
+        assert!(sharpness(&sharp) > sharpness(&blurred) * 2.0);
+        assert_eq!(sharpness(&image::DynamicImage::new_rgb8(2, 2)), 0.0);
+    }
+
+    #[test]
+    fn scan_records_sharpness_and_backfills_old_fingerprints() {
+        let (mut conn, dir) = env();
+        picture(1, 64).save(dir.path().join("a.png")).unwrap();
+        scan(&mut conn);
+        let sharp: Option<f64> =
+            conn.query_row("SELECT sharpness FROM files", [], |r| r.get(0)).unwrap();
+        assert!(sharp.is_some());
+        // A fingerprint from before sharpness existed gets filled in by the next scan.
+        conn.execute("UPDATE files SET sharpness = NULL", []).unwrap();
+        assert_eq!(scan(&mut conn).files_fingerprinted, 1);
+        let sharp: Option<f64> =
+            conn.query_row("SELECT sharpness FROM files", [], |r| r.get(0)).unwrap();
+        assert!(sharp.is_some());
+    }
+
+    #[test]
     fn hamming_counts_bits() {
         assert_eq!(hamming(0, 0), 0);
         assert_eq!(hamming(0b1011, 0b0001), 2);
@@ -634,6 +708,7 @@ mod tests {
             created: None,
             width: None,
             height: None,
+            sharpness: None,
             file_id: fid.map(String::from),
         };
         let files = [f(1, 100, Some("a")), f(2, 100, Some("a")), f(3, 40, Some("b")), f(4, 30, None)];
