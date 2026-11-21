@@ -2,6 +2,8 @@ import { useState } from "react";
 import { thumbUrl, type DupFile } from "../api";
 import { useI18n } from "../i18n";
 import { formatBytes, formatDate, splitPath } from "../format";
+import { isImage } from "../review/types";
+import FileGlyph from "./FileGlyph";
 
 export default function CopyCard({
   file,
@@ -21,13 +23,16 @@ export default function CopyCard({
   const { t } = useI18n();
   const [failed, setFailed] = useState(false);
   const [folder, name] = splitPath(file.path);
+  const image = isImage(file.path);
   const hasDims = !!file.width && !!file.height;
   const cls = ["copy", recommended && "recommended", selected && "selected"].filter(Boolean).join(" ");
 
   return (
     <article className={cls}>
       <div className="thumb">
-        {failed ? (
+        {!image ? (
+          <FileGlyph path={file.path} />
+        ) : failed ? (
           <span className="thumb-fallback">{t("card.noPreview")}</span>
         ) : (
           <img
@@ -52,8 +57,12 @@ export default function CopyCard({
         <span className="copy-name" title={name}>{name}</span>
         <span className="copy-folder" title={folder}>{folder}</span>
         <dl className="copy-meta">
-          <dt>{t("common.resolution")}</dt>
-          <dd>{hasDims ? `${file.width} × ${file.height}` : t("common.unknown")}</dd>
+          {image && (
+            <>
+              <dt>{t("common.resolution")}</dt>
+              <dd>{hasDims ? `${file.width} × ${file.height}` : t("common.unknown")}</dd>
+            </>
+          )}
           <dt>{t("common.size")}</dt>
           <dd>{formatBytes(file.size)}</dd>
           <dt>{t("common.modified")}</dt>

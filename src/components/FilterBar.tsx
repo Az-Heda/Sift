@@ -63,7 +63,7 @@ export default function FilterBar({
               aria-pressed={filters.types.includes(ft.id)}
               onClick={() => toggleType(ft.id)}
             >
-              {ft.label}
+              {ft.labelKey ? t(ft.labelKey) : ft.label}
             </button>
           ))}
         </div>

@@ -8,6 +8,8 @@ import {
   type QuarantineItem,
 } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog";
+import FileGlyph from "../components/FileGlyph";
+import { isImage } from "../review/types";
 import { formatBytes, formatDate, splitPath } from "../format";
 import { useI18n } from "../i18n";
 import { useScan } from "../scan/ScanProvider";
@@ -128,7 +130,8 @@ export default function Quarantine() {
                     aria-label={t("card.selectAria", { name })}
                   />
                   <div className="q-thumb">
-                    {i.exists && (
+                    {i.exists && !isImage(i.original_path) && <FileGlyph path={i.original_path} size={24} />}
+                    {i.exists && isImage(i.original_path) && (
                       <img
                         src={quarantineThumbUrl(i.id)}
                         alt=""

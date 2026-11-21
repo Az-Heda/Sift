@@ -94,14 +94,14 @@ function Scanning() {
       <div className="field">
         <span className="field-label">{t("settings.scan.types")}</span>
         <div className="chips" role="group" aria-label={t("settings.scan.types")}>
-          {FILE_TYPES.map((t) => (
+          {FILE_TYPES.map((ft) => (
             <button
-              key={t.id}
-              className={typeOn(t) ? "chip active" : "chip"}
-              aria-pressed={typeOn(t)}
-              onClick={() => void toggleType(t)}
+              key={ft.id}
+              className={typeOn(ft) ? "chip active" : "chip"}
+              aria-pressed={typeOn(ft)}
+              onClick={() => void toggleType(ft)}
             >
-              {t.label}
+              {ft.labelKey ? t(ft.labelKey) : ft.label}
             </button>
           ))}
         </div>

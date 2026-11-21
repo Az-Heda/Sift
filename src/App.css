@@ -246,6 +246,8 @@ input[type="range"] { accent-color: var(--primary); max-width: 320px; }
   background: repeating-conic-gradient(var(--border) 0 25%, transparent 0 50%) 0 0 / 16px 16px;
 }
 .thumb img { width: 100%; height: 100%; object-fit: contain; }
+.glyph { display: inline-flex; flex-direction: column; align-items: center; gap: var(--s2); color: var(--muted); }
+.glyph-ext { font-size: 12px; letter-spacing: 0.08em; font-weight: 600; }
 .thumb-fallback { color: var(--muted); font-size: 14px; }
 .keep-badge {
   position: absolute; top: var(--s2); left: var(--s2);
@@ -355,6 +357,7 @@ details.warn summary { cursor: pointer; }
 .btn.icon { display: inline-grid; place-items: center; padding: var(--s2); }
 .q-thumb {
   flex: none; width: 56px; height: 56px; border-radius: var(--radius); overflow: hidden;
+  display: grid; place-items: center;
   border: 1px solid var(--border);
   background: repeating-conic-gradient(var(--border) 0 25%, transparent 0 50%) 0 0 / 12px 12px;
 }

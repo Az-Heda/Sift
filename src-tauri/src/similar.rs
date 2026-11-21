@@ -144,7 +144,9 @@ pub fn candidates(conn: &Connection, scan_id: i64) -> Result<Vec<FpCandidate>, S
             Ok(FpCandidate { id: r.get(0)?, path: r.get(1)?, size: r.get(2)?, mtime: r.get(3)? })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    // Only images can be fingerprinted; other file types never get a hash.
+    let all: Vec<FpCandidate> = rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+    Ok(all.into_iter().filter(|c| crate::scan::is_image_path(Path::new(&c.path))).collect())
 }
 
 enum Outcome {

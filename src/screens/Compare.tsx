@@ -8,6 +8,8 @@ import {
 } from "../api";
 import { formatBytes, formatDate, splitPath } from "../format";
 import { useI18n } from "../i18n";
+import FileGlyph from "../components/FileGlyph";
+import { isImage } from "../review/types";
 import { useReview } from "../review/ReviewProvider";
 import { Empty, Screen } from "./Placeholder";
 
@@ -36,6 +38,7 @@ function Pane({
   const { selected, toggle } = useReview();
   const [failed, setFailed] = useState(false);
   const [folder, name] = splitPath(file.path);
+  const image = isImage(file.path);
   const hasDims = !!file.width && !!file.height;
   const run = (fn: (id: number) => Promise<void>) => fn(file.id).catch((e) => onError(errMsg(e)));
 
@@ -55,7 +58,9 @@ function Pane({
       </label>
 
       <div className={zoom ? "viewer zoomed" : "viewer"}>
-        {failed ? (
+        {!image ? (
+          <FileGlyph path={file.path} size={72} />
+        ) : failed ? (
           <span className="thumb-fallback">{t("compare.cantDisplay")}</span>
         ) : (
           <img src={fullUrl(file.id)} alt={name} decoding="async" onError={() => setFailed(true)} />
@@ -66,7 +71,12 @@ function Pane({
       <dl className="copy-meta">
         <dt>{t("compare.name")}</dt><dd title={name}>{name}</dd>
         <dt>{t("compare.location")}</dt><dd title={folder}>{folder}</dd>
-        <dt>{t("common.resolution")}</dt><dd>{hasDims ? `${file.width} × ${file.height}` : t("common.unknown")}</dd>
+        {image && (
+          <>
+            <dt>{t("common.resolution")}</dt>
+            <dd>{hasDims ? `${file.width} × ${file.height}` : t("common.unknown")}</dd>
+          </>
+        )}
         <dt>{t("common.size")}</dt><dd>{formatBytes(file.size)}</dd>
         <dt>{t("common.modified")}</dt><dd>{formatDate(file.modified)}</dd>
         <dt>{t("common.created")}</dt><dd>{file.created ? formatDate(file.created) : t("common.unknown")}</dd>

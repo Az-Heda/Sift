@@ -15,7 +15,9 @@ pub fn enrich(conn: &Connection, groups: &mut [DupGroup]) -> Result<(), String> 
 
     for g in groups.iter_mut() {
         for f in g.files.iter_mut() {
-            if f.width.is_none() || f.height.is_none() {
+            // Only images have dimensions; leave other file types blank.
+            let image = crate::scan::is_image_path(std::path::Path::new(&f.path));
+            if image && (f.width.is_none() || f.height.is_none()) {
                 // (0, 0) records "unreadable" so we don't retry on every listing.
                 let (w, h) = image::image_dimensions(&f.path).unwrap_or((0, 0));
                 save.execute(params![f.id, w, h]).map_err(|e| e.to_string())?;

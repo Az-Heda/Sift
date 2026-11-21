@@ -18,6 +18,30 @@ const HASH_BATCH: usize = 100;
 const BUF_SIZE: usize = 128 * 1024;
 
 const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "tif", "tiff"];
+const VIDEO_EXTS: &[&str] = &["mp4", "m4v", "mov", "mkv", "avi", "webm", "wmv", "flv", "mpg", "mpeg"];
+const AUDIO_EXTS: &[&str] = &["mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "wma"];
+const DOCUMENT_EXTS: &[&str] = &[
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "epub",
+];
+const ARCHIVE_EXTS: &[&str] = &["zip", "rar", "7z", "tar", "gz", "bz2", "xz"];
+
+/// Every extension Sift can scan. Only images get previews, dimensions and similarity
+/// analysis; the rest are matched by exact content (SHA-256) like any other file.
+fn supported_exts() -> impl Iterator<Item = &'static str> {
+    [IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS, DOCUMENT_EXTS, ARCHIVE_EXTS].into_iter().flatten().copied()
+}
+
+fn is_supported(ext: &str) -> bool {
+    supported_exts().any(|e| e == ext)
+}
+
+/// True for formats the `image` crate decodes here (previews, dimensions, perceptual hashes).
+pub fn is_image_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| IMAGE_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
 
 /// Directories that are never descended into (compared case-insensitively).
 const EXCLUDED_DIRS: &[&str] = &[
@@ -77,7 +101,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             excluded_paths: Vec::new(),
-            extensions: IMAGE_EXTS.iter().map(|e| e.to_string()).collect(),
+            extensions: supported_exts().map(String::from).collect(),
             similar: true,
         }
     }
@@ -85,7 +109,7 @@ impl Default for Config {
 
 impl Config {
     /// Reads preferences from the settings table; missing or invalid values fall back to defaults.
-    /// Only supported image extensions are ever honoured.
+    /// Only supported extensions are ever honoured.
     pub fn load(conn: &Connection) -> Result<Config, String> {
         let mut cfg = Config::default();
         if let Some(raw) = crate::db::get_setting(conn, "scan.excluded_paths")? {
@@ -98,7 +122,7 @@ impl Config {
                 cfg.extensions = list
                     .into_iter()
                     .map(|e| e.to_ascii_lowercase())
-                    .filter(|e| IMAGE_EXTS.contains(&e.as_str()))
+                    .filter(|e| is_supported(e))
                     .collect();
             }
         }
@@ -106,7 +130,7 @@ impl Config {
         Ok(cfg)
     }
 
-    fn is_image(&self, path: &Path) -> bool {
+    fn wants(&self, path: &Path) -> bool {
         path.extension()
             .and_then(|e| e.to_str())
             .map(|e| self.extensions.contains(&e.to_ascii_lowercase()))
@@ -264,7 +288,7 @@ pub fn run(
                 }
             };
             // Symlinks report as symlinks (not files) when links aren't followed.
-            if !entry.file_type().is_file() || !config.is_image(entry.path()) {
+            if !entry.file_type().is_file() || !config.wants(entry.path()) {
                 continue;
             }
             let (Some(path), Ok(md)) = (entry.path().to_str(), entry.metadata()) else {
@@ -822,7 +846,7 @@ mod tests {
     #[test]
     fn config_loads_from_settings_and_ignores_unsupported_types() {
         let e = env();
-        assert_eq!(Config::load(&e.conn).unwrap().extensions.len(), IMAGE_EXTS.len());
+        assert_eq!(Config::load(&e.conn).unwrap().extensions.len(), supported_exts().count());
         crate::db::set_setting(&e.conn, "scan.file_types", r#"["PNG","heic"]"#).unwrap();
         crate::db::set_setting(&e.conn, "scan.excluded_paths", r#"["/x/y"]"#).unwrap();
         let cfg = Config::load(&e.conn).unwrap();
@@ -843,5 +867,38 @@ mod tests {
         assert!(i.folders[0].label.ends_with('a'));
         assert_eq!(i.types.len(), 2);
         assert_eq!(i.types.iter().map(|t| t.count).sum::<i64>(), 4);
+    }
+
+    #[test]
+    fn videos_audio_documents_and_archives_group_by_content() {
+        let mut e = env();
+        for (a, b, body) in [
+            ("clip.mp4", "backup/clip-copy.MKV", b"video-bytes".as_slice()),
+            ("song.mp3", "music/song (1).flac", b"audio-bytes"),
+            ("report.pdf", "old/report-final.pdf", b"pdf-bytes!"),
+            ("data.zip", "data2.7z", b"archive-bytes"),
+        ] {
+            write(&e, a, body);
+            write(&e, b, body);
+        }
+        write(&e, "notes.txt", b"video-bytes"); // not a supported type: ignored
+        let s = scan(&mut e);
+        assert_eq!(s.files_seen, 8);
+        let groups = duplicate_groups(&e.conn).unwrap();
+        assert_eq!(groups.len(), 4);
+        assert!(groups.iter().all(|g| g.files.len() == 2));
+    }
+
+    #[test]
+    fn only_images_are_fingerprinted_or_measured() {
+        let mut e = env();
+        write(&e, "a.mp4", b"same");
+        write(&e, "b.mp4", b"same");
+        let s = scan(&mut e);
+        assert_eq!(s.files_fingerprinted, 0);
+        let mut groups = duplicate_groups(&e.conn).unwrap();
+        crate::review::enrich(&e.conn, &mut groups).unwrap();
+        assert_eq!(groups[0].files[0].width, None);
+        assert!(groups[0].keep_id > 0, "a copy is still recommended");
     }
 }
