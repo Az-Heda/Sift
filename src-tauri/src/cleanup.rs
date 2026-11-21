@@ -3,13 +3,15 @@
 //! Nothing here runs on its own; every function acts only on ids the user passed in.
 //! The rules that protect the user's data live here, not in the UI:
 //! * a file is only removed if its hash is known and it is unchanged since the scan;
-//! * at least one other copy, also unchanged, must remain on disk;
+//! * at least one other copy, also unchanged, must remain on disk (for similar images: a
+//!   surviving image whose fingerprint is within the similarity threshold of each removed one);
 //! * quarantined files are moved (not copied), and can be restored to where they came from.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -66,6 +68,24 @@ pub fn set_dir(conn: &Connection, default: &Path, input: &str) -> Result<PathBuf
     Ok(path)
 }
 
+/// What the user was looking at when they chose files: byte-identical copies, or images that
+/// merely look alike. It decides what "another copy remains" means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Exact,
+    Similar,
+}
+
+impl Mode {
+    pub fn parse(s: Option<&str>) -> Result<Mode, String> {
+        match s {
+            None | Some("exact") => Ok(Mode::Exact),
+            Some("similar") => Ok(Mode::Similar),
+            Some(other) => Err(format!("unknown cleanup mode \"{other}\"")),
+        }
+    }
+}
+
 struct Tracked {
     id: i64,
     path: String,
@@ -93,7 +113,100 @@ fn unchanged(t: &Tracked) -> bool {
 
 /// Validates a removal request and returns the files that may be removed.
 /// Anything refused is reported in `result.failed`.
-fn plan(conn: &Connection, ids: &[i64], result: &mut CleanupResult) -> Result<Vec<Tracked>, String> {
+fn plan(conn: &Connection, ids: &[i64], mode: Mode, result: &mut CleanupResult) -> Result<Vec<Tracked>, String> {
+    match mode {
+        Mode::Exact => plan_exact(conn, ids, result),
+        Mode::Similar => plan_similar(conn, ids, result),
+    }
+}
+
+/// Similar-image removal: each file must have a fingerprint, be unchanged, and have a
+/// surviving (unchanged, not selected) image within the similarity threshold. Chains don't
+/// count: a removed image must be close to a survivor itself, not to another removed one.
+fn plan_similar(conn: &Connection, ids: &[i64], result: &mut CleanupResult) -> Result<Vec<Tracked>, String> {
+    let max_dist = crate::similar::threshold(conn)?;
+    let mut seen = HashSet::new();
+    let mut candidates: Vec<(Tracked, u64)> = Vec::new();
+    for &id in ids {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(t) = load(conn, id)? else {
+            result.fail(&format!("file #{id}"), "not tracked by Sift");
+            continue;
+        };
+        let ph: Option<i64> = conn
+            .query_row("SELECT phash FROM files WHERE id = ?1", params![id], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        match ph {
+            None => result.fail(&t.path, "not confirmed as similar (no fingerprint)"),
+            Some(_) if !unchanged(&t) => {
+                result.fail(&t.path, "missing or changed since the last scan; rescan first")
+            }
+            Some(p) => candidates.push((t, p as u64)),
+        }
+    }
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let removing: HashSet<i64> = candidates.iter().map(|(t, _)| t.id).collect();
+    let survivors: Vec<(Tracked, u64)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, path, size, mtime_ns, sha256, phash FROM files WHERE phash IS NOT NULL")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    Tracked { id: r.get(0)?, path: r.get(1)?, size: r.get(2)?, mtime: r.get(3)?, sha: r.get(4)? },
+                    r.get::<_, i64>(5)? as u64,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    };
+
+    let mut ok = Vec::new();
+    for (t, ph) in candidates {
+        let has_keeper = survivors.iter().any(|(s, sp)| {
+            !removing.contains(&s.id) && crate::similar::hamming(ph, *sp) <= max_dist && unchanged(s)
+        });
+        if has_keeper {
+            ok.push(t);
+        } else {
+            result.fail(&t.path, "no similar image would remain");
+        }
+    }
+
+    // Quarantine records a content hash so a restored file can be recognised again, and
+    // similar-only images were never hashed (their sizes are unique). Hash them now.
+    let never = AtomicBool::new(false);
+    let mut verified = Vec::new();
+    for mut t in ok {
+        if t.sha.is_none() {
+            match crate::scan::hash_file(&t.path, &never) {
+                Ok(Some(h)) if unchanged(&t) => {
+                    conn.execute("UPDATE files SET sha256 = ?2 WHERE id = ?1", params![t.id, h])
+                        .map_err(|e| e.to_string())?;
+                    t.sha = Some(h);
+                }
+                Ok(_) => {
+                    result.fail(&t.path, "missing or changed since the last scan; rescan first");
+                    continue;
+                }
+                Err(e) => {
+                    result.fail(&t.path, &e.to_string());
+                    continue;
+                }
+            }
+        }
+        verified.push(t);
+    }
+    verified.sort_by_key(|t| t.id);
+    Ok(verified)
+}
+
+fn plan_exact(conn: &Connection, ids: &[i64], result: &mut CleanupResult) -> Result<Vec<Tracked>, String> {
     let mut seen = HashSet::new();
     let mut candidates: Vec<Tracked> = Vec::new();
     for &id in ids {
@@ -170,9 +283,9 @@ fn file_name(path: &str) -> String {
 }
 
 /// Moves the files into `qdir` and forgets them in the files table.
-pub fn quarantine(conn: &Connection, qdir: &Path, ids: &[i64]) -> Result<CleanupResult, String> {
+pub fn quarantine(conn: &Connection, qdir: &Path, ids: &[i64], mode: Mode) -> Result<CleanupResult, String> {
     let mut result = CleanupResult::default();
-    let files = plan(conn, ids, &mut result)?;
+    let files = plan(conn, ids, mode, &mut result)?;
     if files.is_empty() {
         return Ok(result);
     }
@@ -212,9 +325,9 @@ pub fn quarantine(conn: &Connection, qdir: &Path, ids: &[i64]) -> Result<Cleanup
 }
 
 /// Permanently deletes duplicate files (same safety rules as quarantine).
-pub fn delete_files(conn: &Connection, ids: &[i64]) -> Result<CleanupResult, String> {
+pub fn delete_files(conn: &Connection, ids: &[i64], mode: Mode) -> Result<CleanupResult, String> {
     let mut result = CleanupResult::default();
-    for t in plan(conn, ids, &mut result)? {
+    for t in plan(conn, ids, mode, &mut result)? {
         if let Err(e) = fs::remove_file(&t.path) {
             result.fail(&t.path, &e.to_string());
             continue;
@@ -453,7 +566,7 @@ mod tests {
         let a = write(&e, "a.jpg", b"data");
         let b = write(&e, "b.jpg", b"data");
         scan(&mut e);
-        let r = quarantine(&e.conn, e.q.path(), &[id_of(&e, &b)]).unwrap();
+        let r = quarantine(&e.conn, e.q.path(), &[id_of(&e, &b)], Mode::Exact).unwrap();
         assert_eq!((r.done, r.bytes, r.failed.len()), (1, 4, 0));
         assert!(a.exists() && !b.exists());
         assert_eq!(tracked_count(&e), 1);
@@ -470,11 +583,11 @@ mod tests {
         let b = write(&e, "b.jpg", b"data");
         scan(&mut e);
         let ids = [id_of(&e, &a), id_of(&e, &b)];
-        let r = quarantine(&e.conn, e.q.path(), &ids).unwrap();
+        let r = quarantine(&e.conn, e.q.path(), &ids, Mode::Exact).unwrap();
         assert_eq!(r.done, 0);
         assert_eq!(r.failed.len(), 2);
         assert!(a.exists() && b.exists());
-        let r = delete_files(&e.conn, &ids).unwrap();
+        let r = delete_files(&e.conn, &ids, Mode::Exact).unwrap();
         assert_eq!(r.done, 0);
         assert!(a.exists() && b.exists());
     }
@@ -486,7 +599,7 @@ mod tests {
         let b = write(&e, "b.jpg", b"data");
         scan(&mut e);
         fs::write(&b, b"changed!").unwrap();
-        let r = quarantine(&e.conn, e.q.path(), &[id_of(&e, &b)]).unwrap();
+        let r = quarantine(&e.conn, e.q.path(), &[id_of(&e, &b)], Mode::Exact).unwrap();
         assert_eq!(r.done, 0);
         assert!(b.exists());
 
@@ -495,7 +608,7 @@ mod tests {
         let d = write(&e, "d.jpg", b"data2");
         scan(&mut e);
         fs::write(&c, b"other").unwrap();
-        let r = quarantine(&e.conn, e.q.path(), &[id_of(&e, &d)]).unwrap();
+        let r = quarantine(&e.conn, e.q.path(), &[id_of(&e, &d)], Mode::Exact).unwrap();
         assert_eq!(r.done, 0);
         assert!(d.exists() && a.exists());
     }
@@ -503,7 +616,7 @@ mod tests {
     #[test]
     fn unknown_ids_are_reported_not_fatal() {
         let e = env();
-        let r = quarantine(&e.conn, e.q.path(), &[12345]).unwrap();
+        let r = quarantine(&e.conn, e.q.path(), &[12345], Mode::Exact).unwrap();
         assert_eq!((r.done, r.failed.len()), (0, 1));
     }
 
@@ -513,7 +626,7 @@ mod tests {
         write(&e, "a.jpg", b"data");
         let b = write(&e, "sub/b.jpg", b"data");
         scan(&mut e);
-        quarantine(&e.conn, e.q.path(), &[id_of(&e, &b)]).unwrap();
+        quarantine(&e.conn, e.q.path(), &[id_of(&e, &b)], Mode::Exact).unwrap();
         fs::remove_dir(e.dir.path().join("sub")).unwrap(); // folder gone too
         let qid = list_quarantine(&e.conn).unwrap()[0].id;
         let r = restore(&e.conn, &[qid]).unwrap();
@@ -530,7 +643,7 @@ mod tests {
         write(&e, "a.jpg", b"data");
         let b = write(&e, "b.jpg", b"data");
         scan(&mut e);
-        quarantine(&e.conn, e.q.path(), &[id_of(&e, &b)]).unwrap();
+        quarantine(&e.conn, e.q.path(), &[id_of(&e, &b)], Mode::Exact).unwrap();
         fs::write(&b, b"someone else's file").unwrap();
         let qid = list_quarantine(&e.conn).unwrap()[0].id;
         restore(&e.conn, &[qid]).unwrap();
@@ -544,7 +657,7 @@ mod tests {
         write(&e, "a.jpg", b"data");
         let b = write(&e, "b.jpg", b"data");
         scan(&mut e);
-        let r = delete_files(&e.conn, &[id_of(&e, &b)]).unwrap();
+        let r = delete_files(&e.conn, &[id_of(&e, &b)], Mode::Exact).unwrap();
         assert_eq!(r.done, 1);
         assert!(!b.exists());
         assert_eq!(tracked_count(&e), 1);
@@ -557,7 +670,7 @@ mod tests {
         write(&e, "a.jpg", b"data");
         let b = write(&e, "b.jpg", b"data");
         scan(&mut e);
-        quarantine(&e.conn, e.q.path(), &[id_of(&e, &b)]).unwrap();
+        quarantine(&e.conn, e.q.path(), &[id_of(&e, &b)], Mode::Exact).unwrap();
         assert_eq!(recovered(&e.conn).unwrap(), 0, "quarantine alone frees nothing");
         let qid = list_quarantine(&e.conn).unwrap()[0].id;
         let r = delete_quarantined(&e.conn, &[qid]).unwrap();
@@ -586,5 +699,84 @@ mod tests {
 
         assert_eq!(set_dir(&e.conn, &default, "  ").unwrap(), default);
         assert_eq!(dir(&e.conn, &default).unwrap(), default);
+    }
+
+    fn save_picture(e: &Env, name: &str, seed: u32, size: u32) -> PathBuf {
+        let p = e.dir.path().join(name);
+        crate::similar::test_picture(seed, size).save(&p).unwrap();
+        p
+    }
+
+    fn similar_env() -> (Env, PathBuf, PathBuf, PathBuf) {
+        let mut e = env();
+        let big = save_picture(&e, "big.png", 1, 200);
+        let small = e.dir.path().join("small.png");
+        image::open(&big)
+            .unwrap()
+            .resize_exact(90, 90, image::imageops::FilterType::Lanczos3)
+            .save(&small)
+            .unwrap();
+        let other = save_picture(&e, "other.png", 4, 200);
+        scan(&mut e);
+        (e, big, small, other)
+    }
+
+    #[test]
+    fn similar_mode_quarantines_when_a_similar_image_remains() {
+        let (e, big, small, _) = similar_env();
+        // The files have different sizes, so the exact pipeline never hashed them.
+        let sha: Option<String> = e
+            .conn
+            .query_row("SELECT sha256 FROM files WHERE id = ?1", params![id_of(&e, &small)], |r| r.get(0))
+            .unwrap();
+        assert!(sha.is_none());
+
+        let r = quarantine(&e.conn, e.q.path(), &[id_of(&e, &small)], Mode::Similar).unwrap();
+        assert_eq!((r.done, r.failed.len()), (1, 0), "{:?}", r.failed);
+        assert!(!small.exists() && big.exists());
+        assert_eq!(list_quarantine(&e.conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn similar_mode_refuses_to_remove_every_similar_image() {
+        let (e, big, small, _) = similar_env();
+        let r = quarantine(&e.conn, e.q.path(), &[id_of(&e, &big), id_of(&e, &small)], Mode::Similar).unwrap();
+        assert_eq!(r.done, 2 - r.failed.len() as u32);
+        assert_eq!(r.failed.len(), 2, "{:?}", r.failed);
+        assert!(big.exists() && small.exists());
+    }
+
+    #[test]
+    fn similar_mode_refuses_an_image_with_no_similar_survivor() {
+        let (e, _, _, other) = similar_env();
+        let r = delete_files(&e.conn, &[id_of(&e, &other)], Mode::Similar).unwrap();
+        assert_eq!(r.done, 0);
+        assert_eq!(r.failed.len(), 1);
+        assert!(other.exists());
+    }
+
+    #[test]
+    fn similar_mode_refuses_files_changed_since_scan() {
+        let (e, big, small, _) = similar_env();
+        fs::write(&small, b"changed").unwrap();
+        let r = delete_files(&e.conn, &[id_of(&e, &small)], Mode::Similar).unwrap();
+        assert_eq!(r.done, 0);
+        assert!(small.exists() && big.exists());
+    }
+
+    #[test]
+    fn similar_mode_does_not_count_a_changed_survivor() {
+        let (e, big, small, _) = similar_env();
+        fs::write(&big, b"changed").unwrap();
+        let r = delete_files(&e.conn, &[id_of(&e, &small)], Mode::Similar).unwrap();
+        assert_eq!(r.done, 0, "the only similar image changed on disk, so nothing is safe to remove");
+        assert!(small.exists());
+    }
+
+    #[test]
+    fn modes_parse() {
+        assert_eq!(Mode::parse(None).unwrap(), Mode::Exact);
+        assert_eq!(Mode::parse(Some("similar")).unwrap(), Mode::Similar);
+        assert!(Mode::parse(Some("whatever")).is_err());
     }
 }

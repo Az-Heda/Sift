@@ -52,6 +52,10 @@ const MIGRATIONS: &[&str] = &[
         height         INTEGER,
         moved_at       INTEGER NOT NULL DEFAULT (unixepoch())
     );",
+    // Perceptual hashes for similar-image detection. `phash` holds the 64-bit hash's bit
+    // pattern; `phash_failed` marks images that could not be decoded so they aren't retried.
+    "ALTER TABLE files ADD COLUMN phash INTEGER;
+    ALTER TABLE files ADD COLUMN phash_failed INTEGER NOT NULL DEFAULT 0;",
 ];
 
 #[derive(Debug, Serialize, PartialEq)]

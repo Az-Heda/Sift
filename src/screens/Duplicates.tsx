@@ -1,20 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   deleteFiles,
-  listDuplicates,
   listFolders,
+  listGroups,
   openContainingFolder,
   quarantineFiles,
   revealFile,
   type CleanupResult,
   type DupGroup,
+  type DupMode,
   type Folder,
 } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog";
 import CopyCard from "../components/CopyCard";
 import FilterBar from "../components/FilterBar";
 import { formatBytes } from "../format";
-import { useI18n } from "../i18n";
+import { useI18n, type MsgKey } from "../i18n";
 import { applyFilters, isFiltered } from "../review/filters";
 import { applyRule, RULES, type KeepRule } from "../review/rules";
 import { useReview } from "../review/ReviewProvider";
@@ -22,13 +23,17 @@ import { useScan } from "../scan/ScanProvider";
 import { Empty, Screen } from "./Placeholder";
 
 const PAGE = 25;
+const MODES: { id: DupMode; label: MsgKey }[] = [
+  { id: "exact", label: "dup.mode.exact" },
+  { id: "similar", label: "dup.mode.similar" },
+];
 const errMsg = (e: unknown) => (typeof e === "string" ? e : (e as Error)?.message ?? "Unknown error");
 
 export default function Duplicates() {
   const { version, invalidate, running } = useScan();
   const { t } = useI18n();
   const review = useReview();
-  const { selected, filters } = review;
+  const { selected, filters, mode } = review;
   const [groups, setGroups] = useState<DupGroup[] | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -42,14 +47,20 @@ export default function Duplicates() {
   const [failures, setFailures] = useState<CleanupResult["failed"]>([]);
 
   useEffect(() => {
-    listDuplicates()
+    let current = true;
+    setGroups(null);
+    listGroups(mode)
       .then((g) => {
+        if (!current) return;
         setGroups(g);
         setError(null);
       })
-      .catch((e) => setError(errMsg(e)));
+      .catch((e) => current && setError(errMsg(e)));
     listFolders().then(setFolders).catch(() => setFolders([]));
-  }, [version]);
+    return () => {
+      current = false;
+    };
+  }, [version, mode]);
 
   const visible = useMemo(() => (groups ? applyFilters(groups, filters) : []), [groups, filters]);
 
@@ -58,7 +69,7 @@ export default function Duplicates() {
 
   const sizeById = useMemo(() => {
     const m = new Map<number, number>();
-    groups?.forEach((g) => g.files.forEach((f) => m.set(f.id, g.size)));
+    groups?.forEach((g) => g.files.forEach((f) => m.set(f.id, f.size)));
     return m;
   }, [groups]);
   const selectedBytes = useMemo(
@@ -87,7 +98,7 @@ export default function Duplicates() {
     setError(null);
     setNotice(null);
     try {
-      const r = await (kind === "quarantine" ? quarantineFiles : deleteFiles)([...selected]);
+      const r = await (kind === "quarantine" ? quarantineFiles : deleteFiles)([...selected], mode);
       setFailures(r.failed);
       setNotice(t(kind === "quarantine" ? "dup.moved" : "dup.deleted", { n: r.done, size: formatBytes(r.bytes) }));
       invalidate(); // refetches the list and clears the selection
@@ -101,7 +112,24 @@ export default function Duplicates() {
   const cleanupBlocked = busy || running || selected.size === 0 || emptied > 0;
 
   return (
-    <Screen title={t("dup.title")} subtitle={t("dup.subtitle")}>
+    <Screen
+      title={t("dup.title")}
+      subtitle={t(mode === "similar" ? "dup.subtitleSimilar" : "dup.subtitle")}
+    >
+      <div className="segmented" role="radiogroup" aria-label={t("dup.mode.aria")}>
+        {MODES.map((m) => (
+          <button
+            key={m.id}
+            className={mode === m.id ? "seg active" : "seg"}
+            role="radio"
+            aria-checked={mode === m.id}
+            onClick={() => review.setMode(m.id)}
+          >
+            {t(m.label)}
+          </button>
+        ))}
+      </div>
+      {mode === "similar" && <p className="muted">{t("dup.similarNote")}</p>}
       {error && <div className="alert" role="alert">{error}</div>}
       {notice && <div className="notice" role="status">{notice}</div>}
       {failures.length > 0 && (
@@ -115,7 +143,7 @@ export default function Duplicates() {
         </details>
       )}
       {groups === null ? null : groups.length === 0 ? (
-        <Empty text={t("dup.empty")} />
+        <Empty text={t(mode === "similar" ? "dup.emptySimilar" : "dup.empty")} />
       ) : (
         <>
           <FilterBar
@@ -173,9 +201,13 @@ export default function Duplicates() {
                 return (
                   <li className="card group" key={g.sha256}>
                     <div className="group-head">
-                      <strong>{t("count.copies", { n: g.files.length })}</strong>
+                      <strong>
+                        {t(g.kind === "similar" ? "count.similar" : "count.copies", { n: g.files.length })}
+                      </strong>
                       <span className="muted">
-                        {t("dup.recoverable", { size: formatBytes(g.size), wasted: formatBytes(g.wasted) })}
+                        {g.kind === "similar"
+                          ? t("dup.recoverableSimilar", { wasted: formatBytes(g.wasted) })
+                          : t("dup.recoverable", { size: formatBytes(g.size), wasted: formatBytes(g.wasted) })}
                       </span>
                     </div>
                     {allSelected && (
@@ -188,7 +220,6 @@ export default function Duplicates() {
                         <CopyCard
                           key={f.id}
                           file={f}
-                          size={g.size}
                           recommended={f.id === g.keep_id}
                           selected={selected.has(f.id)}
                           onToggle={() => review.toggle(f.id)}
@@ -244,6 +275,7 @@ export default function Duplicates() {
         onConfirm={() => void runCleanup("quarantine")}
       >
         <p>{t("dup.q.body", { n: selected.size, size: formatBytes(selectedBytes) })}</p>
+        {mode === "similar" && <p><strong>{t("dup.similarWarn")}</strong></p>}
         <p>{t("dup.q.hint")}</p>
       </ConfirmDialog>
       <ConfirmDialog
@@ -254,6 +286,7 @@ export default function Duplicates() {
         onConfirm={() => void runCleanup("delete")}
       >
         <p>{t("dup.d.body", { n: selected.size, size: formatBytes(selectedBytes) })}</p>
+        {mode === "similar" && <p><strong>{t("dup.similarWarn")}</strong></p>}
         <p><strong>{t("dup.d.warn")}</strong> {t("dup.d.hint")}</p>
       </ConfirmDialog>
     </Screen>

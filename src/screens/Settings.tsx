@@ -2,6 +2,8 @@ import { FolderSearch2, RotateCcw, Save } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   getList,
+  getSetting,
+  setSetting,
   getQuarantineDir,
   pickFolder,
   setList,
@@ -22,15 +24,28 @@ const MODES: { id: ThemeMode; label: MsgKey }[] = [
 
 const TYPES_KEY = "scan.file_types";
 const EXCLUDED_KEY = "scan.excluded_paths";
+const SIMILAR_KEY = "scan.similar";
+const SENSITIVITY_KEY = "similar.sensitivity";
+const SENSITIVITIES: { id: string; label: MsgKey }[] = [
+  { id: "strict", label: "settings.scan.sensitivity.strict" },
+  { id: "normal", label: "settings.scan.sensitivity.normal" },
+  { id: "loose", label: "settings.scan.sensitivity.loose" },
+];
 const errMsg = (e: unknown) => (typeof e === "string" ? e : (e as Error)?.message ?? "Unknown error");
 
 function Scanning() {
   const { t } = useI18n();
   const [exts, setExts] = useState<string[]>(ALL_EXTS);
   const [excluded, setExcluded] = useState<string[]>([]);
+  const [similar, setSimilar] = useState(true);
+  const [sensitivity, setSensitivity] = useState("normal");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    getSetting(SIMILAR_KEY).then((v) => setSimilar(v !== "0")).catch((e) => setError(errMsg(e)));
+    getSetting(SENSITIVITY_KEY)
+      .then((v) => v && SENSITIVITIES.some((s) => s.id === v) && setSensitivity(v))
+      .catch((e) => setError(errMsg(e)));
     getList(TYPES_KEY).then((l) => l && setExts(l)).catch((e) => setError(errMsg(e)));
     getList(EXCLUDED_KEY).then((l) => l && setExcluded(l)).catch((e) => setError(errMsg(e)));
   }, []);
@@ -51,6 +66,15 @@ function Scanning() {
       : [...exts, ...t.exts];
     return save(TYPES_KEY, next, setExts);
   };
+
+  const saveSetting = (key: string, value: string, apply: () => void) =>
+    setSetting(key, value).then(
+      () => {
+        apply();
+        setError(null);
+      },
+      (e) => setError(errMsg(e)),
+    );
 
   async function addExcluded() {
     try {
@@ -81,6 +105,39 @@ function Scanning() {
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="field">
+        <label className="inline check">
+          <input
+            type="checkbox"
+            checked={similar}
+            onChange={(e) => {
+              const on = e.target.checked;
+              void saveSetting(SIMILAR_KEY, on ? "1" : "0", () => setSimilar(on));
+            }}
+          />
+          <span className="field-label">{t("settings.scan.similar")}</span>
+        </label>
+        <span className="muted">{t("settings.scan.similarHelp")}</span>
+      </div>
+
+      <div className="field">
+        <span className="field-label" id="sens-label">{t("settings.scan.sensitivity")}</span>
+        <div className="segmented" role="radiogroup" aria-labelledby="sens-label">
+          {SENSITIVITIES.map((s) => (
+            <button
+              key={s.id}
+              className={sensitivity === s.id ? "seg active" : "seg"}
+              role="radio"
+              aria-checked={sensitivity === s.id}
+              onClick={() => void saveSetting(SENSITIVITY_KEY, s.id, () => setSensitivity(s.id))}
+            >
+              {t(s.label)}
+            </button>
+          ))}
+        </div>
+        <span className="muted">{t("settings.scan.sensitivityHelp")}</span>
       </div>
 
       <div className="field">

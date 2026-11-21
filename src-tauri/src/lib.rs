@@ -2,6 +2,7 @@ mod cleanup;
 mod db;
 mod review;
 mod scan;
+mod similar;
 mod thumbs;
 
 use std::path::PathBuf;
@@ -127,6 +128,15 @@ async fn list_duplicates(db: State<'_, Db>) -> Result<Vec<scan::DupGroup>, Strin
 }
 
 #[tauri::command]
+async fn list_similar(db: State<'_, Db>) -> Result<Vec<scan::DupGroup>, String> {
+    db.with(|c| {
+        let mut groups = similar::similar_groups(c)?;
+        review::enrich_similar(c, &mut groups)?;
+        Ok(groups)
+    })
+}
+
+#[tauri::command]
 async fn get_stats(db: State<'_, Db>) -> Result<scan::Stats, String> {
     db.with(scan::stats)
 }
@@ -166,10 +176,12 @@ async fn quarantine_files(
     db: State<'_, Db>,
     scan: State<'_, ScanState>,
     ids: Vec<i64>,
+    mode: Option<String>,
 ) -> Result<cleanup::CleanupResult, String> {
     ensure_idle(&scan)?;
+    let mode = cleanup::Mode::parse(mode.as_deref())?;
     let default = default_quarantine_dir(&app)?;
-    db.with(|c| cleanup::quarantine(c, &cleanup::dir(c, &default)?, &ids))
+    db.with(|c| cleanup::quarantine(c, &cleanup::dir(c, &default)?, &ids, mode))
 }
 
 #[tauri::command]
@@ -177,9 +189,11 @@ async fn delete_files(
     db: State<'_, Db>,
     scan: State<'_, ScanState>,
     ids: Vec<i64>,
+    mode: Option<String>,
 ) -> Result<cleanup::CleanupResult, String> {
     ensure_idle(&scan)?;
-    db.with(|c| cleanup::delete_files(c, &ids))
+    let mode = cleanup::Mode::parse(mode.as_deref())?;
+    db.with(|c| cleanup::delete_files(c, &ids, mode))
 }
 
 #[tauri::command]
@@ -323,6 +337,7 @@ pub fn run() {
             cancel_scan,
             scan_status,
             list_duplicates,
+            list_similar,
             get_stats,
             get_insights,
             quarantine_files,

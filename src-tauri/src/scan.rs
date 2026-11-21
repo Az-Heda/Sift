@@ -33,9 +33,10 @@ const EXCLUDED_DIRS: &[&str] = &[
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Progress {
-    /// "discovering" | "hashing" | "finalizing"
+    /// "discovering" | "hashing" | "fingerprinting" | "finalizing"
     pub phase: &'static str,
     pub files_found: u64,
+    /// Work items in the current phase (files to hash, or to fingerprint) and how many are done.
     pub hash_total: u64,
     pub hash_done: u64,
     pub errors: u64,
@@ -50,6 +51,8 @@ pub struct Summary {
     pub files_hashed: u64,
     /// Files in size-collision groups whose cached hash was still valid.
     pub files_cached: u64,
+    /// Images whose perceptual hash was computed (or found undecodable) this scan.
+    pub files_fingerprinted: u64,
     pub errors: u64,
 }
 
@@ -66,6 +69,8 @@ pub struct Config {
     pub excluded_paths: Vec<std::path::PathBuf>,
     /// Lowercase extensions to scan, without the dot.
     pub extensions: Vec<String>,
+    /// Compute perceptual hashes for similar-image detection.
+    pub similar: bool,
 }
 
 impl Default for Config {
@@ -73,6 +78,7 @@ impl Default for Config {
         Config {
             excluded_paths: Vec::new(),
             extensions: IMAGE_EXTS.iter().map(|e| e.to_string()).collect(),
+            similar: true,
         }
     }
 }
@@ -96,6 +102,7 @@ impl Config {
                     .collect();
             }
         }
+        cfg.similar = crate::similar::enabled(conn)?;
         Ok(cfg)
     }
 
@@ -165,6 +172,10 @@ fn flush_rows(conn: &mut Connection, rows: &mut Vec<Row>, scan_id: i64) -> Resul
                                  THEN files.width ELSE NULL END,
                     height = CASE WHEN files.size = excluded.size AND files.mtime_ns = excluded.mtime_ns
                                   THEN files.height ELSE NULL END,
+                    phash = CASE WHEN files.size = excluded.size AND files.mtime_ns = excluded.mtime_ns
+                                 THEN files.phash ELSE NULL END,
+                    phash_failed = CASE WHEN files.size = excluded.size AND files.mtime_ns = excluded.mtime_ns
+                                        THEN files.phash_failed ELSE 0 END,
                     size = excluded.size,
                     mtime_ns = excluded.mtime_ns",
             )
@@ -180,7 +191,7 @@ fn flush_rows(conn: &mut Connection, rows: &mut Vec<Row>, scan_id: i64) -> Resul
 }
 
 /// Streams the file through SHA-256. Returns `None` if cancelled mid-file.
-fn hash_file(path: &str, cancel: &AtomicBool) -> std::io::Result<Option<String>> {
+pub(crate) fn hash_file(path: &str, cancel: &AtomicBool) -> std::io::Result<Option<String>> {
     let mut f = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; BUF_SIZE];
@@ -344,7 +355,30 @@ pub fn run(
         on_progress(&p);
     }
 
-    // 3. Finalize. Only a completed scan may sweep rows for files that disappeared.
+    // 3. Fingerprint images for similarity detection (separate from the exact pipeline).
+    let mut fingerprinted = 0u64;
+    if !cancelled && config.similar {
+        let todo = crate::similar::candidates(conn, scan_id)?;
+        p.phase = "fingerprinting";
+        p.hash_total = todo.len() as u64;
+        p.hash_done = 0;
+        on_progress(&p);
+        if !todo.is_empty() {
+            let mut last = 0u64;
+            let (n, was_cancelled) = crate::similar::fingerprint(conn, todo, cancel, &mut |done| {
+                // The callback is called per file; only report every few to keep events cheap.
+                if done - last >= 5 {
+                    last = done;
+                    p.hash_done = done;
+                    on_progress(&p);
+                }
+            })?;
+            fingerprinted = n;
+            cancelled = was_cancelled;
+        }
+    }
+
+    // 4. Finalize. Only a completed scan may sweep rows for files that disappeared.
     p.phase = "finalizing";
     on_progress(&p);
     let status = if cancelled { "cancelled" } else { "completed" };
@@ -377,6 +411,7 @@ pub fn run(
         files_seen: p.files_found,
         files_hashed: hashed,
         files_cached: cached,
+        files_fingerprinted: fingerprinted,
         errors: p.errors,
     })
 }
@@ -385,6 +420,10 @@ pub fn run(
 pub struct DupFile {
     pub id: i64,
     pub path: String,
+    pub size: i64,
+    /// Identifies the physical file (Unix); used to tell hard links apart. Not sent to the UI.
+    #[serde(skip)]
+    pub file_id: Option<String>,
     /// Last modified, Unix seconds.
     pub modified: i64,
     /// Creation time, Unix seconds, when the filesystem reports one (filled by `review::enrich`).
@@ -395,7 +434,11 @@ pub struct DupFile {
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct DupGroup {
+    /// "exact" | "similar"
+    pub kind: &'static str,
+    /// Identifies the group: the content hash for exact groups, `similar-<id>` for similar ones.
     pub sha256: String,
+    /// Size of each copy for exact groups; of the largest copy for similar ones.
     pub size: i64,
     pub files: Vec<DupFile>,
     /// Bytes recoverable by keeping one physical copy. Hard links don't count.
@@ -442,7 +485,16 @@ pub fn duplicate_groups(conn: &Connection) -> Result<Vec<DupGroup>, String> {
             (size, Vec::new())
         });
         entry.1.push((
-            DupFile { id, path, modified: mtime / 1_000_000_000, created: None, width, height },
+            DupFile {
+                id,
+                path,
+                size,
+                file_id: fid.clone(),
+                modified: mtime / 1_000_000_000,
+                created: None,
+                width,
+                height,
+            },
             fid,
         ));
     }
@@ -464,6 +516,7 @@ pub fn duplicate_groups(conn: &Connection) -> Result<Vec<DupGroup>, String> {
             continue;
         }
         groups.push(DupGroup {
+            kind: "exact",
             sha256: sha,
             size,
             wasted: size * (copies as i64 - 1),
@@ -481,6 +534,8 @@ pub struct Stats {
     pub bytes: i64,
     pub groups: i64,
     pub wasted: i64,
+    /// Groups of visually similar (not byte-identical) images.
+    pub similar_groups: i64,
     /// Bytes permanently freed by cleanup so far.
     pub recovered: i64,
     /// Bytes currently held in quarantine (still on disk until deleted).
@@ -507,6 +562,7 @@ pub fn stats(conn: &Connection) -> Result<Stats, String> {
         bytes,
         groups: groups.len() as i64,
         wasted: groups.iter().map(|g| g.wasted).sum(),
+        similar_groups: crate::similar::group_count(conn)?,
         recovered: crate::cleanup::recovered(conn)?,
         quarantined: crate::cleanup::quarantined_bytes(conn)?,
         last_scan_at,
@@ -756,6 +812,7 @@ mod tests {
         let cfg = Config {
             excluded_paths: vec![e.dir.path().join("skip")],
             extensions: vec!["jpg".into()],
+            similar: false,
         };
         let id = begin_scan(&e.conn).unwrap();
         let s = run(&mut e.conn, id, &AtomicBool::new(false), &cfg, &mut |_| {}).unwrap();

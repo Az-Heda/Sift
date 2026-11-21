@@ -67,7 +67,7 @@ function Pane({
         <dt>{t("compare.name")}</dt><dd title={name}>{name}</dd>
         <dt>{t("compare.location")}</dt><dd title={folder}>{folder}</dd>
         <dt>{t("common.resolution")}</dt><dd>{hasDims ? `${file.width} × ${file.height}` : t("common.unknown")}</dd>
-        <dt>{t("common.size")}</dt><dd>{formatBytes(group.size)}</dd>
+        <dt>{t("common.size")}</dt><dd>{formatBytes(file.size)}</dd>
         <dt>{t("common.modified")}</dt><dd>{formatDate(file.modified)}</dd>
         <dt>{t("common.created")}</dt><dd>{file.created ? formatDate(file.created) : t("common.unknown")}</dd>
       </dl>
@@ -116,7 +116,11 @@ export default function Compare() {
   return (
     <Screen
       title={t("compare.title")}
-      subtitle={t("compare.subtitle", { n: group.files.length, size: formatBytes(group.size) })}
+      subtitle={
+        group.kind === "similar"
+          ? t("compare.subtitleSimilar", { n: group.files.length })
+          : t("compare.subtitle", { n: group.files.length, size: formatBytes(group.size) })
+      }
     >
       {error && <div className="alert" role="alert">{error}</div>}
       <div className="toolbar">
@@ -132,7 +136,9 @@ export default function Compare() {
         <button className="btn" aria-pressed={zoom} onClick={() => setZoom((z) => !z)}>
           {zoom ? t("compare.fit") : t("compare.actual")}
         </button>
-        <span className="muted">{t("compare.hint")}</span>
+        <span className="muted">
+          {t(group.kind === "similar" ? "compare.hintSimilar" : "compare.hint")}
+        </span>
       </div>
       <div className="compare">
         <Pane group={group} file={left} other={right} files={group.files} zoom={zoom}

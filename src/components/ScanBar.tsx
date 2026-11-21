@@ -17,7 +17,8 @@ export default function ScanBar() {
   }
 
   if (running) {
-    const hashing = progress?.phase === "hashing" && progress.hash_total > 0;
+    const hashing =
+      (progress?.phase === "hashing" || progress?.phase === "fingerprinting") && progress.hash_total > 0;
     const pct = hashing ? Math.round((progress!.hash_done / progress!.hash_total) * 100) : null;
     const label = !progress || progress.phase === "discovering"
       ? t("scan.discovering", { n: formatNumber(progress?.files_found ?? 0) })
@@ -26,7 +27,12 @@ export default function ScanBar() {
             done: formatNumber(progress.hash_done),
             total: formatNumber(progress.hash_total),
           })
-        : t("scan.finishing");
+        : progress.phase === "fingerprinting"
+          ? t("scan.fingerprinting", {
+              done: formatNumber(progress.hash_done),
+              total: formatNumber(progress.hash_total),
+            })
+          : t("scan.finishing");
     return (
       <div className="card scanbar" role="status">
         <div className="scanbar-row">

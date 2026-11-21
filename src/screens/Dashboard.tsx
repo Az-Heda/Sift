@@ -22,6 +22,7 @@ export default function Dashboard() {
     [t("stat.storage"), stats ? formatBytes(stats.bytes) : "—"],
     [t("stat.groups"), stats ? formatNumber(stats.groups) : "—"],
     [t("stat.wasted"), stats ? formatBytes(stats.wasted) : "—"],
+    [t("stat.similar"), stats ? formatNumber(stats.similar_groups) : "—"],
     [t("stat.recovered"), stats ? formatBytes(stats.recovered) : "—"],
     [t("stat.quarantined"), stats ? formatBytes(stats.quarantined) : "—"],
   ];

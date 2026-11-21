@@ -33,6 +33,17 @@ pub fn enrich(conn: &Connection, groups: &mut [DupGroup]) -> Result<(), String> 
     Ok(())
 }
 
+/// Like `enrich`, for similar groups: also works out the bytes each group would free
+/// (which depends on the recommended copy) and puts the biggest savings first.
+pub fn enrich_similar(conn: &Connection, groups: &mut Vec<DupGroup>) -> Result<(), String> {
+    enrich(conn, groups)?;
+    for g in groups.iter_mut() {
+        g.wasted = crate::similar::wasted_bytes(&g.files, g.keep_id);
+    }
+    groups.sort_by(|a, b| b.wasted.cmp(&a.wasted).then(a.sha256.cmp(&b.sha256)));
+    Ok(())
+}
+
 fn pixels(f: &DupFile) -> u64 {
     f.width.unwrap_or(0) as u64 * f.height.unwrap_or(0) as u64
 }
@@ -62,7 +73,16 @@ mod tests {
     use super::*;
 
     fn f(id: i64, path: &str, w: u32, h: u32, modified: i64, created: Option<i64>) -> DupFile {
-        DupFile { id, path: path.into(), modified, created, width: Some(w), height: Some(h) }
+        DupFile {
+            id,
+            path: path.into(),
+            size: 1,
+            file_id: None,
+            modified,
+            created,
+            width: Some(w),
+            height: Some(h),
+        }
     }
 
     #[test]

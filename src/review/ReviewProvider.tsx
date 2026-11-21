@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { DupGroup } from "../api";
+import type { DupGroup, DupMode } from "../api";
 import { useScan } from "../scan/ScanProvider";
 import { DEFAULT_FILTERS, type Filters } from "./filters";
 
@@ -22,6 +22,9 @@ interface ReviewCtx {
   clear: () => void;
   /** Selects every copy in `group` except `keepId`. */
   keepOnly: (group: DupGroup, keepId: number) => void;
+  /** Which kind of duplicates the Duplicates screen shows. Switching clears the selection. */
+  mode: DupMode;
+  setMode: (mode: DupMode) => void;
   filters: Filters;
   setFilters: (patch: Partial<Filters>) => void;
   resetFilters: () => void;
@@ -43,6 +46,7 @@ export function ReviewProvider({
   const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
   const [filters, setFiltersState] = useState<Filters>(DEFAULT_FILTERS);
   const [compare, setCompare] = useState<DupGroup | null>(null);
+  const [mode, setModeState] = useState<DupMode>("exact");
 
   // A finished scan can delete or renumber files, so ids from before it are stale.
   useEffect(() => {
@@ -65,6 +69,11 @@ export function ReviewProvider({
       }),
     [],
   );
+  // A file can be in both an exact and a similar group, so a selection never carries over.
+  const setMode = useCallback((m: DupMode) => {
+    setModeState(m);
+    setSelected(new Set());
+  }, []);
   const clear = useCallback(() => setSelected(new Set()), []);
   const keepOnly = useCallback((group: DupGroup, keepId: number) => {
     const others = group.files.filter((f) => f.id !== keepId).map((f) => f.id);
@@ -86,9 +95,9 @@ export function ReviewProvider({
   const value = useMemo(
     () => ({
       selected, toggle, add, replace, remove, clear, keepOnly,
-      filters, setFilters, resetFilters, compare, openCompare,
+      mode, setMode, filters, setFilters, resetFilters, compare, openCompare,
     }),
-    [selected, toggle, add, replace, remove, clear, keepOnly, filters, setFilters, resetFilters, compare, openCompare],
+    [selected, toggle, add, replace, remove, clear, keepOnly, mode, setMode, filters, setFilters, resetFilters, compare, openCompare],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -5,7 +5,6 @@ import { formatBytes, formatDate, splitPath } from "../format";
 
 export default function CopyCard({
   file,
-  size,
   recommended,
   selected,
   onToggle,
@@ -13,7 +12,6 @@ export default function CopyCard({
   onOpenFolder,
 }: {
   file: DupFile;
-  size: number;
   recommended: boolean;
   selected: boolean;
   onToggle: () => void;
@@ -57,7 +55,7 @@ export default function CopyCard({
           <dt>{t("common.resolution")}</dt>
           <dd>{hasDims ? `${file.width} × ${file.height}` : t("common.unknown")}</dd>
           <dt>{t("common.size")}</dt>
-          <dd>{formatBytes(size)}</dd>
+          <dd>{formatBytes(file.size)}</dd>
           <dt>{t("common.modified")}</dt>
           <dd>{formatDate(file.modified)}</dd>
           <dt>{t("common.created")}</dt>
